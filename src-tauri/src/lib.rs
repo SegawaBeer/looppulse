@@ -8,10 +8,9 @@ use tauri::{
     Emitter, Listener, Manager,
 };
 use tauri_nspanel::{
-    ManagerExt, PanelLevel, CollectionBehavior, StyleMask, WebviewWindowExt,
+    CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt,
 };
 use system_notification::WorkspaceListener;
-use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 
 tauri_nspanel::tauri_panel! {
     panel!(ObserverPanel {
@@ -82,9 +81,22 @@ pub fn run() {
 fn setup_panel(app_handle: &tauri::AppHandle) {
     let window = app_handle.get_webview_window("panel").unwrap();
 
-    let _ = apply_vibrancy(&window, NSVisualEffectMaterial::Menu, None, Some(10.0));
+    // Clear title — suppresses the macOS Sonoma floating title pill on borderless panels
+    let _ = window.set_title("");
 
     let panel = window.to_panel::<ObserverPanel>().unwrap();
+
+    // Suppress macOS Sonoma floating title pill on borderless panels
+    unsafe {
+        let ns = panel.as_panel();
+        let _: () = objc2::msg_send![ns, setTitleVisibility: 1_i64]; // NSWindowTitleHidden = 1
+        let _: () = objc2::msg_send![ns, setTitlebarAppearsTransparent: true];
+        // Disable macOS built-in slide-down animation so our CSS slide-from-right plays instead
+        let _: () = objc2::msg_send![ns, setAnimationBehavior: 2_i64]; // NSWindowAnimationBehaviorNone = 2
+        // Force full transparency so window corners don't show as black/square behind rounded content
+        let _: () = objc2::msg_send![ns, setOpaque: false];
+        let _: () = objc2::msg_send![ns, setHasShadow: false];
+    }
 
     panel.set_level(PanelLevel::Status.value());
     panel.set_collection_behavior(
@@ -96,6 +108,7 @@ fn setup_panel(app_handle: &tauri::AppHandle) {
     );
     panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
 
+    // Hide panel whenever it loses key window status (covers clicking desktop + other apps)
     let resign_handle = app_handle.clone();
     let handler = ObserverPanelHandler::new();
     handler.window_did_resign_key(move |_| {
@@ -105,22 +118,45 @@ fn setup_panel(app_handle: &tauri::AppHandle) {
 
     let listen_handle = app_handle.clone();
     app_handle.listen("panel_did_resign_key", move |_| {
-        if !is_frontmost_app() {
-            if let Ok(panel) = listen_handle.get_webview_panel("panel") {
-                panel.hide();
-            }
+        if let Ok(panel) = listen_handle.get_webview_panel("panel") {
+            panel.hide();
         }
     });
 
-    app_handle.listen_workspace(
-        "NSWorkspaceDidActivateApplicationNotification",
-        hide_panel_if_not_frontmost,
-    );
-
+    // Hide on space switch
     app_handle.listen_workspace(
         "NSWorkspaceActiveSpaceDidChangeNotification",
         hide_panel_always,
     );
+
+    // Global click monitor — catches clicks in empty menubar area that don't
+    // trigger window_did_resign_key (handled by System UI Server, not our app).
+    // Apple docs: global monitors fire for events delivered to OTHER processes,
+    // so clicks on our own tray icon are excluded automatically.
+    setup_global_click_monitor(app_handle.clone());
+}
+
+fn setup_global_click_monitor(app_handle: tauri::AppHandle) {
+    let mask = objc2_app_kit::NSEventMask(
+        objc2_app_kit::NSEventMask::LeftMouseDown.0
+            | objc2_app_kit::NSEventMask::RightMouseDown.0,
+    );
+
+    let block = block2::RcBlock::new(
+        move |_event: std::ptr::NonNull<objc2_app_kit::NSEvent>| {
+            if let Ok(panel) = app_handle.get_webview_panel("panel") {
+                if panel.is_visible() {
+                    panel.hide();
+                }
+            }
+        },
+    );
+
+    let _monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>> = unsafe {
+        objc2_app_kit::NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &*block)
+    };
+    // Keep block alive for app lifetime
+    std::mem::forget(block);
 }
 
 fn toggle_panel(app_handle: tauri::AppHandle, rect: &tauri::Rect) {
@@ -132,23 +168,8 @@ fn toggle_panel(app_handle: tauri::AppHandle, rect: &tauri::Rect) {
     }
 
     position_panel(&app_handle, rect);
-
-    let cur_monitor: Monitor = match ::monitor::get_monitor_with_cursor() {
-        Some(m) => m,
-        None => {
-            panel.show();
-            return;
-        }
-    };
-
-    let window = app_handle.get_webview_window("panel").unwrap();
-    if let Some(window_monitor) = window.current_monitor().ok().flatten() {
-        if (window_monitor.position().x as f64 - cur_monitor.position().x).abs() < 1.0 {
-            panel.show();
-        }
-    } else {
-        panel.show();
-    }
+    panel.show();
+    let _ = app_handle.emit("panel-shown", ());
 }
 
 fn position_panel(app_handle: &tauri::AppHandle, rect: &tauri::Rect) {
@@ -167,47 +188,19 @@ fn position_panel(app_handle: &tauri::AppHandle, rect: &tauri::Rect) {
     let panel = app_handle.get_webview_panel("panel").unwrap();
     let ns_panel = panel.as_panel();
 
+    use objc2_foundation::NSRect;
     let current_frame: NSRect = unsafe { objc2::msg_send![ns_panel, frame] };
     let mut new_frame = current_frame;
+
+    // Place panel below menubar with CleanMyMac-style gap (~10px)
     new_frame.origin.y =
-        (monitor_pos.y + monitor_size.height) - menubar_height - current_frame.size.height;
+        (monitor_pos.y + monitor_size.height) - menubar_height - current_frame.size.height - 10.0;
     new_frame.origin.x = icon_pos.x + icon_size.width / 2.0 - current_frame.size.width / 2.0;
     let _: () = unsafe { objc2::msg_send![ns_panel, setFrame: new_frame, display: false] };
-}
-
-fn hide_panel_if_not_frontmost(app_handle: tauri::AppHandle) {
-    if is_frontmost_app() {
-        return;
-    }
-    if let Ok(panel) = app_handle.get_webview_panel("panel") {
-        panel.hide();
-    }
 }
 
 fn hide_panel_always(app_handle: tauri::AppHandle) {
     if let Ok(panel) = app_handle.get_webview_panel("panel") {
         panel.hide();
-    }
-}
-
-fn is_frontmost_app() -> bool {
-    use objc2::runtime::AnyObject;
-
-    unsafe {
-        let process_info: &AnyObject =
-            objc2::msg_send![objc2::class!(NSProcessInfo), processInfo];
-        let app_pid: i32 = objc2::msg_send![process_info, processIdentifier];
-
-        let workspace: &AnyObject =
-            objc2::msg_send![objc2::class!(NSWorkspace), sharedWorkspace];
-        let frontmost: Option<&AnyObject> =
-            objc2::msg_send![workspace, frontmostApplication];
-        match frontmost {
-            Some(app) => {
-                let frontmost_pid: i32 = objc2::msg_send![app, processIdentifier];
-                app_pid == frontmost_pid
-            }
-            None => false,
-        }
     }
 }
