@@ -4,6 +4,7 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
+  base: "./",
   plugins: [svelte()],
   clearScreen: false,
   server: {

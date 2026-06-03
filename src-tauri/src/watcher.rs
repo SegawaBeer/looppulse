@@ -8,7 +8,11 @@ pub async fn run(app: AppHandle) {
     loop {
         let mut all_sessions = vec![];
         for plugin in &plugins {
-            all_sessions.extend(plugin.discover_sessions());
+            let plugin_name = plugin.name().to_string();
+            all_sessions.extend(plugin.discover_sessions().into_iter().map(|mut session| {
+                session.agent_type = plugin_name.clone();
+                session
+            }));
         }
 
         let _ = app.emit("agent-update", &all_sessions);

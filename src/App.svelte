@@ -17,15 +17,37 @@
 
   let sessions: AgentSession[] = $state([]);
   let animationKey = $state(0);
+  let panelAnchorX = $state(50);
+  let hasShown = $state(false);
 
-  onMount(async () => {
-    sessions = await invoke<AgentSession[]>("get_sessions");
+  onMount(() => {
+    const unlisteners: Array<() => void> = [];
+
     listen<AgentSession[]>("agent-update", (event) => {
       sessions = event.payload;
-    });
-    listen("panel-shown", () => {
+    }).then((unlisten) => unlisteners.push(unlisten));
+
+    listen<number>("panel-shown", (event) => {
+      panelAnchorX = event.payload ?? 50;
+      hasShown = true;
       animationKey++;
+    }).then((unlisten) => unlisteners.push(unlisten));
+
+    invoke<AgentSession[]>("get_sessions")
+      .then((result) => {
+        sessions = result;
+      })
+      .catch((error) => {
+        console.error("get_sessions failed", error);
+      });
+
+    invoke("panel_ready").catch((error) => {
+      console.error("panel_ready failed", error);
     });
+
+    return () => {
+      unlisteners.forEach((unlisten) => unlisten());
+    };
   });
 
   function statusColor(s: string): string {
@@ -88,6 +110,7 @@
 
 <div class="panel-wrap">
 {#key animationKey}
+<div class={`panel-shell${hasShown ? " animate-in" : ""}`} style:--anchor-x={`${panelAnchorX}%`}>
 <div class="panel">
   <header>
     <div class="header-text">
@@ -177,15 +200,18 @@
     </div>
   </footer>
 </div>
+</div>
 {/key}
 </div>
 
 <style>
   :global(*) { box-sizing: border-box; }
 
-  :global(html), :global(body) {
+  :global(html), :global(body), :global(#app) {
     margin: 0;
     padding: 0;
+    width: 100%;
+    height: 100%;
     background: transparent !important;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -196,31 +222,77 @@
   }
 
   .panel-wrap {
-    /* Wrapper exists only to host the {#key} block; no visual effect */
-    display: contents;
+    width: 100%;
+    height: 100%;
+    padding: 10px 100px 80px 58px;
+  }
+
+  .panel-shell {
+    position: relative;
+    width: 432px;
+    height: 414px;
+    transform-origin: var(--anchor-x, 50%) -10px;
+    opacity: 1;
+    transform: translateX(0) translateY(0) scale(1);
+    will-change: opacity, transform;
+  }
+
+  .panel-shell::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 18px;
+    box-shadow:
+      0 2px 12px rgba(0, 0, 0, 0.24),
+      0 18px 44px -16px rgba(0, 0, 0, 0.56);
+    pointer-events: none;
   }
 
   .panel {
-    width: 340px;
-    background: linear-gradient(160deg, rgba(62, 26, 148, 0.97) 0%, rgba(44, 16, 116, 0.99) 100%);
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background:
+      radial-gradient(circle at 78% 10%, rgba(157, 102, 255, 0.34), transparent 32%),
+      radial-gradient(circle at 30% 30%, rgba(93, 55, 210, 0.36), transparent 36%),
+      linear-gradient(160deg, rgba(61, 23, 143, 0.88) 0%, rgba(35, 9, 94, 0.93) 100%);
+    -webkit-backdrop-filter: blur(24px) saturate(1.28);
+    backdrop-filter: blur(24px) saturate(1.28);
     border-radius: 18px;
+    -webkit-clip-path: inset(0 round 18px);
+    clip-path: inset(0 round 18px);
     overflow: hidden;
+    isolation: isolate;
     display: flex;
     flex-direction: column;
     box-shadow:
-      0 0 0 0.5px rgba(255, 255, 255, 0.12),
-      0 12px 40px rgba(0, 0, 0, 0.5);
-    animation: panel-slide-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+      inset 0 0 0 0.5px rgba(255, 255, 255, 0.16);
+  }
+
+  .panel-shell.animate-in {
+    animation: panel-slide-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
   @keyframes panel-slide-in {
-    from { transform: translateX(28px); opacity: 0; }
-    to   { transform: translateX(0);    opacity: 1; }
+    from {
+      transform: translateX(78px) translateY(0) scale(0.992);
+      opacity: 0;
+    }
+    40% {
+      opacity: 0.78;
+    }
+    78% {
+      opacity: 1;
+    }
+    to {
+      transform: translateX(0) translateY(0) scale(1);
+      opacity: 1;
+    }
   }
 
   /* ── Header ── */
   header {
-    padding: 16px 16px 14px;
+    padding: 18px 20px 15px;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -234,7 +306,7 @@
     font-size: 22px;
     font-weight: 700;
     margin: 0 0 5px;
-    letter-spacing: -0.5px;
+    letter-spacing: 0;
     line-height: 1.2;
     white-space: nowrap;
   }
@@ -259,10 +331,10 @@
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 10px 12px;
+    padding: 13px 16px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
   }
 
   .body::-webkit-scrollbar { width: 3px; }
@@ -275,9 +347,11 @@
   /* ── Empty ── */
   .empty {
     display: flex;
+    flex: 1;
     flex-direction: column;
     align-items: center;
-    padding: 32px 0 28px;
+    justify-content: center;
+    padding: 18px 0 22px;
     gap: 9px;
   }
 
@@ -296,8 +370,8 @@
   /* ── Card ── */
   .card {
     background: rgba(255, 255, 255, 0.10);
-    border-radius: 9px;
-    padding: 10px 12px 9px;
+    border-radius: 10px;
+    padding: 11px 13px 10px;
     cursor: default;
     transition: background 0.13s ease, border-color 0.13s ease;
     border: 0.5px solid rgba(255, 255, 255, 0.09);
@@ -356,7 +430,7 @@
     text-overflow: ellipsis;
     margin-bottom: 7px;
     font-family: "SF Mono", "Menlo", "Monaco", monospace;
-    letter-spacing: -0.3px;
+    letter-spacing: 0;
   }
 
   .card-bottom {
@@ -383,7 +457,7 @@
 
   /* ── Footer ── */
   footer {
-    padding: 9px 14px;
+    padding: 10px 16px;
     border-top: 1px solid rgba(255, 255, 255, 0.07);
     display: flex;
     align-items: center;
@@ -396,7 +470,7 @@
     text-align: center;
     font-size: 11.5px;
     color: rgba(255, 255, 255, 0.35);
-    letter-spacing: 0.3px;
+    letter-spacing: 0;
   }
 
   .footer-btn {
