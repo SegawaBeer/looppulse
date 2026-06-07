@@ -3,20 +3,14 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 pub async fn run(app: AppHandle) {
-    let plugins = agents::all_plugins();
-
     loop {
-        let mut all_sessions = vec![];
-        for plugin in &plugins {
-            let plugin_name = plugin.name().to_string();
-            all_sessions.extend(plugin.discover_sessions().into_iter().map(|mut session| {
-                session.agent_type = plugin_name.clone();
-                session
-            }));
-        }
+        let settings = crate::settings::load_settings();
+        let refresh_interval_seconds = settings.refresh_interval_seconds;
+        let snapshot = agents::collect_monitor_snapshot(&settings);
+        crate::update_tray_health(&app, &snapshot.sessions);
+        let _ = app.emit("agent-update", &snapshot.sessions);
+        let _ = app.emit("monitor-update", &snapshot);
 
-        let _ = app.emit("agent-update", &all_sessions);
-
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(refresh_interval_seconds)).await;
     }
 }

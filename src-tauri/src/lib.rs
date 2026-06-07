@@ -1,19 +1,24 @@
 mod agents;
+mod claude_statusline;
+mod events;
+mod focus;
+mod launch_agent;
+mod settings;
 mod watcher;
 
-use agents::AgentSession;
+use agents::{AgentSession, MonitorSnapshot};
+use events::SessionEvent;
+use objc2::AnyThread;
+use settings::AppSettings;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
+    atomic::{AtomicU64, AtomicU8, Ordering},
+    Arc, Mutex, OnceLock,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use system_notification::WorkspaceListener;
-use tauri::{
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Listener, Manager, PhysicalPosition, PhysicalSize,
-};
+use tauri::{Emitter, Listener, Manager, PhysicalPosition, PhysicalSize};
 use tauri_nspanel::{CollectionBehavior, ManagerExt, Panel, PanelLevel, WebviewWindowExt};
 
 const PANEL_EDGE_MARGIN: f64 = 10.0;
@@ -28,17 +33,35 @@ const PANEL_GUTTER_BOTTOM: f64 = 80.0;
 const PANEL_CLICK_GUARD_MS: u64 = 250;
 const PANEL_TRAY_DEBOUNCE_MS: u64 = 180;
 const PANEL_LOG_PATH: &str = "/tmp/observer-panel.log";
-const TRAY_ID: &str = "observer-tray";
 
 static LAST_TRAY_TOGGLE_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_TRAY_HEALTH_STATE: AtomicU8 = AtomicU8::new(TrayHealthState::Unknown as u8);
+static NATIVE_STATUS_ITEM: OnceLock<usize> = OnceLock::new();
+static NATIVE_STATUS_BUTTON: OnceLock<usize> = OnceLock::new();
+static NATIVE_STATUS_TARGET: OnceLock<usize> = OnceLock::new();
+static NATIVE_STATUS_GESTURE: OnceLock<usize> = OnceLock::new();
+static STATUS_EVENT_TAP_INSTALLED: OnceLock<()> = OnceLock::new();
+static EVENT_TAP_DEBUG_COUNT: AtomicU8 = AtomicU8::new(0);
+static PENDING_NOTIFICATION_TARGET: OnceLock<Mutex<Option<PendingNotificationTarget>>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct PendingNotificationTarget {
+    session_id: String,
+    recorded_at: i64,
+}
 
 mod status_action {
-    use objc2::{define_class, msg_send, DeclaredClass, MainThreadOnly};
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
-    use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol};
+    use objc2::{define_class, msg_send, DeclaredClass, MainThreadOnly};
+    use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSRect};
 
     pub(super) struct TrayActionTargetIvars {
+        pub(super) app_handle: tauri::AppHandle,
+    }
+
+    pub(super) struct StatusButtonIvars {
         pub(super) app_handle: tauri::AppHandle,
     }
 
@@ -51,22 +74,46 @@ mod status_action {
         unsafe impl NSObjectProtocol for TrayActionTarget {}
 
         impl TrayActionTarget {
-            #[unsafe(method(observerTrayIconClicked:))]
-            fn observer_tray_icon_clicked(&self, sender: &AnyObject) {
-                super::panel_log("status button action: clicked");
-                super::toggle_panel_at_appkit_sender(
+            #[unsafe(method(observerNativeStatusClicked:))]
+            fn observer_native_status_clicked(&self, _sender: &AnyObject) {
+                super::panel_log("native status action: clicked");
+                super::toggle_panel_at_native_status_anchor(
                     self.ivars().app_handle.clone(),
-                    sender,
-                    "status-action",
+                    "native-status-action",
                 );
             }
 
-            #[unsafe(method(observerTrayIconClicked))]
-            fn observer_tray_icon_clicked_without_sender(&self) {
-                super::panel_log("status button action: clicked without sender");
-                super::toggle_panel_at_appkit_senderless(
+            #[unsafe(method(observerNativeStatusGesture:))]
+            fn observer_native_status_gesture(&self, _sender: &AnyObject) {
+                super::panel_log("native status gesture: clicked");
+                super::toggle_panel_at_native_status_anchor(
                     self.ivars().app_handle.clone(),
-                    "status-action-no-sender",
+                    "native-status-gesture",
+                );
+            }
+        }
+    );
+
+    define_class!(
+        #[unsafe(super = objc2_app_kit::NSView)]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = StatusButtonIvars]
+        pub(super) struct StatusButton;
+
+        unsafe impl NSObjectProtocol for StatusButton {}
+
+        impl StatusButton {
+            #[unsafe(method(acceptsFirstMouse:))]
+            fn accepts_first_mouse(&self, _event: Option<&objc2_app_kit::NSEvent>) -> bool {
+                true
+            }
+
+            #[unsafe(method(mouseDown:))]
+            fn mouse_down(&self, _event: &objc2_app_kit::NSEvent) {
+                super::panel_log("native status custom button: mouseDown");
+                super::toggle_panel_at_native_status_anchor(
+                    self.ivars().app_handle.clone(),
+                    "native-status-custom-button",
                 );
             }
         }
@@ -76,6 +123,111 @@ mod status_action {
         pub(super) fn new(app_handle: tauri::AppHandle, mtm: MainThreadMarker) -> Retained<Self> {
             let this = Self::alloc(mtm).set_ivars(TrayActionTargetIvars { app_handle });
             unsafe { msg_send![super(this), init] }
+        }
+    }
+
+    impl StatusButton {
+        pub(super) fn new(
+            app_handle: tauri::AppHandle,
+            frame: NSRect,
+            mtm: MainThreadMarker,
+        ) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(StatusButtonIvars { app_handle });
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayHealthState {
+    Unknown = 0,
+    Empty = 1,
+    Ok = 2,
+    Active = 3,
+    Warning = 4,
+    Critical = 5,
+}
+
+impl TrayHealthState {
+    fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Empty,
+            2 => Self::Ok,
+            3 => Self::Active,
+            4 => Self::Warning,
+            5 => Self::Critical,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn from_sessions(sessions: &[AgentSession]) -> Self {
+        if sessions.is_empty() {
+            return Self::Empty;
+        }
+
+        if sessions
+            .iter()
+            .any(|session| session.risk_level == "critical")
+        {
+            return Self::Critical;
+        }
+
+        if sessions
+            .iter()
+            .any(|session| session.risk_level == "warning")
+        {
+            return Self::Warning;
+        }
+
+        if sessions.iter().any(|session| {
+            matches!(
+                session.status.as_str(),
+                "busy" | "thinking" | "executing" | "rate_limited"
+            )
+        }) {
+            return Self::Active;
+        }
+
+        Self::Ok
+    }
+
+    fn icon_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Unknown | Self::Empty | Self::Ok => {
+                include_bytes!("../icons/tray-default.png")
+            }
+            Self::Active => include_bytes!("../icons/tray-active.png"),
+            Self::Warning => include_bytes!("../icons/tray-warning.png"),
+            Self::Critical => include_bytes!("../icons/tray-critical.png"),
+        }
+    }
+
+    fn tooltip(self, sessions: &[AgentSession]) -> String {
+        let total = sessions.len();
+        let active = sessions
+            .iter()
+            .filter(|session| {
+                matches!(
+                    session.status.as_str(),
+                    "busy" | "thinking" | "executing" | "rate_limited"
+                )
+            })
+            .count();
+        let critical = sessions
+            .iter()
+            .filter(|session| session.risk_level == "critical")
+            .count();
+        let warning = sessions
+            .iter()
+            .filter(|session| session.risk_level == "warning")
+            .count();
+
+        match self {
+            Self::Unknown | Self::Empty => "观察者 · 暂无会话".to_string(),
+            Self::Critical => format!("观察者 · {critical} 个高危 · {total} 会话"),
+            Self::Warning => format!("观察者 · {warning} 个注意 · {total} 会话"),
+            Self::Active => format!("观察者 · {active} 个活跃 · {total} 会话"),
+            Self::Ok => format!("观察者 · 健康 · {total} 会话"),
         }
     }
 }
@@ -96,17 +248,153 @@ tauri_nspanel::tauri_panel! {
 }
 
 #[tauri::command]
-fn get_sessions() -> Vec<AgentSession> {
-    let plugins = agents::all_plugins();
-    let mut all = vec![];
-    for plugin in &plugins {
-        let plugin_name = plugin.name().to_string();
-        all.extend(plugin.discover_sessions().into_iter().map(|mut session| {
-            session.agent_type = plugin_name.clone();
-            session
-        }));
+async fn get_sessions() -> Result<Vec<AgentSession>, String> {
+    panel_log("command get_sessions: begin");
+    tauri::async_runtime::spawn_blocking(|| {
+        let settings = settings::load_settings();
+        agents::collect_sessions_with_settings(&settings)
+    })
+    .await
+    .map(|sessions| {
+        panel_log(&format!(
+            "command get_sessions: end count={}",
+            sessions.len()
+        ));
+        sessions
+    })
+    .map_err(|error| {
+        panel_log(&format!("command get_sessions: join failed: {error}"));
+        error.to_string()
+    })
+}
+
+#[tauri::command]
+async fn get_monitor_snapshot() -> Result<MonitorSnapshot, String> {
+    panel_log("command get_monitor_snapshot: begin");
+    tauri::async_runtime::spawn_blocking(|| {
+        let settings = settings::load_settings();
+        agents::collect_monitor_snapshot(&settings)
+    })
+    .await
+    .map(|snapshot| {
+        panel_log(&format!(
+            "command get_monitor_snapshot: end sessions={} mcp={} rate_limits={}",
+            snapshot.sessions.len(),
+            snapshot.mcp_servers.len(),
+            snapshot.rate_limits.len()
+        ));
+        snapshot
+    })
+    .map_err(|error| {
+        panel_log(&format!(
+            "command get_monitor_snapshot: join failed: {error}"
+        ));
+        error.to_string()
+    })
+}
+
+#[tauri::command]
+fn get_claude_statusline_status() -> claude_statusline::ClaudeStatusLineStatus {
+    claude_statusline::status()
+}
+
+#[tauri::command]
+fn install_claude_statusline() -> Result<claude_statusline::ClaudeStatusLineStatus, String> {
+    claude_statusline::install()
+}
+
+#[tauri::command]
+fn get_settings() -> AppSettings {
+    let mut settings = settings::load_settings();
+    settings.launch_at_login = launch_agent::launch_at_login_enabled();
+    settings
+}
+
+#[tauri::command]
+fn save_settings(settings: AppSettings) -> Result<AppSettings, String> {
+    let mut settings = settings::save_settings(settings)?;
+    settings.launch_at_login = launch_agent::sync_launch_at_login(settings.launch_at_login)?;
+    settings::save_settings(settings)
+}
+
+#[tauri::command]
+fn set_launch_at_login(enabled: bool) -> Result<AppSettings, String> {
+    let mut settings = settings::load_settings();
+    settings.launch_at_login = enabled;
+    settings.launch_at_login = launch_agent::sync_launch_at_login(enabled)?;
+    settings::save_settings(settings)
+}
+
+#[tauri::command]
+fn get_event_history(limit: Option<u32>) -> Result<Vec<SessionEvent>, String> {
+    events::load_recent_events(limit.unwrap_or(200))
+}
+
+#[tauri::command]
+fn append_event_history(
+    app_handle: tauri::AppHandle,
+    events: Vec<SessionEvent>,
+) -> Result<Vec<SessionEvent>, String> {
+    let settings = settings::load_settings();
+    if !settings.history_enabled || !settings.is_pro() {
+        return events::load_recent_events(200);
     }
-    all
+    let history = events::append_events(events, settings.history_retention_days)?;
+    let _ = app_handle.emit("event-history-update", &history);
+    Ok(history)
+}
+
+#[tauri::command]
+fn clear_event_history(app_handle: tauri::AppHandle) -> Result<Vec<SessionEvent>, String> {
+    events::clear_events()?;
+    let history = Vec::new();
+    let _ = app_handle.emit("event-history-update", &history);
+    Ok(history)
+}
+
+#[tauri::command]
+fn open_project(path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("project path is empty".to_string());
+    }
+
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn open_terminal(path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("project path is empty".to_string());
+    }
+
+    let script = format!(
+        r#"tell application "Terminal"
+  activate
+  do script "cd {}"
+end tell"#,
+        shell_escape_for_applescript(&path)
+    );
+
+    std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn focus_agent(
+    agent_type: String,
+    cwd: String,
+    project_name: String,
+    pid: Option<u32>,
+) -> Result<String, String> {
+    focus::focus_agent_window(&agent_type, &cwd, &project_name, pid)
 }
 
 #[tauri::command]
@@ -114,12 +402,234 @@ fn panel_ready() {
     panel_log("webview: panel_ready");
 }
 
+#[tauri::command]
+fn frontend_log(message: String) {
+    panel_log(&format!("webview: {message}"));
+}
+
+#[tauri::command]
+fn record_notification_target(session_id: Option<String>) -> Result<(), String> {
+    let Some(session_id) = session_id.map(|value| value.trim().to_string()) else {
+        return Ok(());
+    };
+    if session_id.is_empty() {
+        return Ok(());
+    }
+
+    let mut target = pending_notification_target()
+        .lock()
+        .map_err(|error| error.to_string())?;
+    *target = Some(PendingNotificationTarget {
+        session_id: session_id.clone(),
+        recorded_at: agents::now_seconds(),
+    });
+    panel_log(&format!(
+        "notification target: recorded session={session_id}"
+    ));
+    Ok(())
+}
+
+#[tauri::command]
+fn take_pending_notification_target(
+    max_age_seconds: Option<u64>,
+) -> Result<Option<String>, String> {
+    let mut target = pending_notification_target()
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let Some(pending) = target.as_ref() else {
+        return Ok(None);
+    };
+
+    let max_age_seconds = max_age_seconds.unwrap_or(15 * 60) as i64;
+    let age = agents::now_seconds().saturating_sub(pending.recorded_at);
+    if age > max_age_seconds {
+        panel_log(&format!(
+            "notification target: dropped stale session={} age={}s",
+            pending.session_id, age
+        ));
+        *target = None;
+        return Ok(None);
+    }
+
+    let session_id = target.take().map(|pending| pending.session_id);
+    if let Some(session_id) = &session_id {
+        panel_log(&format!(
+            "notification target: consumed session={session_id}"
+        ));
+    }
+    Ok(session_id)
+}
+
+#[tauri::command]
+fn show_panel_from_notification(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let show_handle = app_handle.clone();
+    app_handle
+        .run_on_main_thread(move || {
+            reveal_panel(show_handle, "notification");
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn open_dashboard(app_handle: tauri::AppHandle) -> Result<(), String> {
+    if !settings::load_settings().is_pro() {
+        return Err("完整视图属于 Pro 能力".to_string());
+    }
+
+    let Some(window) = app_handle.get_webview_window("dashboard") else {
+        return Err("dashboard window not found".to_string());
+    };
+
+    window.show().map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn cleanup_orphan_port(pid: u32, port: u16, force: Option<bool>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = settings::load_settings();
+        let orphan = agents::find_orphan_port(&settings, pid, port)
+            .ok_or_else(|| format!("PID {pid} 上的 :{port} 不是当前识别到的孤儿端口"))?;
+
+        if !agents::pid_listens_on_port(pid, port) {
+            return Err(format!(":{port} 已不再由 PID {pid} 监听"));
+        }
+
+        panel_log(&format!(
+            "cleanup orphan port: pid={pid} port={port} force={}",
+            force.unwrap_or(false)
+        ));
+        terminate_process(pid, libc::SIGTERM)?;
+
+        if wait_for_port_release(pid, port, 2200) {
+            return Ok(format!(
+                "已清理 :{port} · PID {pid} · {}",
+                orphan.project_name
+            ));
+        }
+
+        if force.unwrap_or(false) {
+            terminate_process(pid, libc::SIGKILL)?;
+            if wait_for_port_release(pid, port, 1600) {
+                return Ok(format!(
+                    "已强制清理 :{port} · PID {pid} · {}",
+                    orphan.project_name
+                ));
+            }
+        }
+
+        Err(format!(
+            "已发送终止信号，但 :{port} 仍在监听；请稍后刷新或手动检查 PID {pid}"
+        ))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn shell_escape_for_applescript(value: &str) -> String {
+    let escaped = value.replace('\'', r#"'\''"#);
+    format!("'{}'", escaped.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn pending_notification_target() -> &'static Mutex<Option<PendingNotificationTarget>> {
+    PENDING_NOTIFICATION_TARGET.get_or_init(|| Mutex::new(None))
+}
+
+fn has_fresh_pending_notification_target(max_age_seconds: u64) -> bool {
+    let Ok(target) = pending_notification_target().lock() else {
+        return false;
+    };
+    target.as_ref().is_some_and(|pending| {
+        agents::now_seconds().saturating_sub(pending.recorded_at) <= max_age_seconds as i64
+    })
+}
+
+fn handle_application_did_become_active(app_handle: tauri::AppHandle) {
+    if !has_fresh_pending_notification_target(15 * 60) {
+        return;
+    }
+
+    panel_log("notification target: app activated with pending target");
+    let reveal_handle = app_handle.clone();
+    if let Err(error) = app_handle.run_on_main_thread(move || {
+        reveal_panel(reveal_handle, "notification-activation");
+    }) {
+        panel_log(&format!(
+            "notification target: reveal on activation failed: {error}"
+        ));
+    }
+    let _ = app_handle.emit("notification-target-pending", ());
+}
+
+fn terminate_process(pid: u32, signal: i32) -> Result<(), String> {
+    let result = unsafe { libc::kill(pid as i32, signal) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().to_string())
+    }
+}
+
+fn wait_for_port_release(pid: u32, port: u16, timeout_ms: u64) -> bool {
+    let started = std::time::Instant::now();
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    while started.elapsed() < timeout {
+        if !agents::pid_listens_on_port(pid, port) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(120));
+    }
+    !agents::pid_listens_on_port(pid, port)
+}
+
+pub(crate) fn update_tray_health(app_handle: &tauri::AppHandle, sessions: &[AgentSession]) {
+    let state = TrayHealthState::from_sessions(sessions);
+    let previous =
+        TrayHealthState::from_code(LAST_TRAY_HEALTH_STATE.swap(state as u8, Ordering::Relaxed));
+
+    if previous == state {
+        return;
+    }
+
+    let tooltip = state.tooltip(sessions);
+    let update_handle = app_handle.clone();
+    let result = app_handle.run_on_main_thread(move || {
+        apply_tray_health_state(&update_handle, state, &tooltip);
+    });
+
+    if let Err(error) = result {
+        panel_log(&format!("tray health: main thread update failed: {error}"));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_nspanel::init())
-        .invoke_handler(tauri::generate_handler![get_sessions, panel_ready])
+        .invoke_handler(tauri::generate_handler![
+            append_event_history,
+            clear_event_history,
+            get_event_history,
+            get_claude_statusline_status,
+            get_monitor_snapshot,
+            get_sessions,
+            install_claude_statusline,
+            get_settings,
+            focus_agent,
+            frontend_log,
+            open_dashboard,
+            open_project,
+            open_terminal,
+            panel_ready,
+            cleanup_orphan_port,
+            record_notification_target,
+            save_settings,
+            set_launch_at_login,
+            show_panel_from_notification,
+            take_pending_notification_target
+        ])
         .setup(|app| {
             let _ = std::fs::remove_file(PANEL_LOG_PATH);
             panel_log("setup: app starting");
@@ -127,14 +637,13 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
 
-            install_tauri_status_item(&app_handle);
-
-            app.on_tray_icon_event(|app_handle, event| {
-                handle_tray_event(app_handle.clone(), event, "global");
-            });
-            panel_log("setup: global tray listener registered");
+            install_native_status_item(&app_handle);
 
             setup_panel(&app_handle);
+            app_handle.listen_notification(
+                "NSApplicationDidBecomeActiveNotification",
+                handle_application_did_become_active,
+            );
 
             let monitor_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
@@ -184,8 +693,7 @@ fn setup_panel(app_handle: &tauri::AppHandle) {
     );
     unsafe {
         let ns = panel.as_panel();
-        let current_mask: objc2_app_kit::NSWindowStyleMask =
-            objc2::msg_send![ns, styleMask];
+        let current_mask: objc2_app_kit::NSWindowStyleMask = objc2::msg_send![ns, styleMask];
         let next_mask = current_mask | objc2_app_kit::NSWindowStyleMask::NonactivatingPanel;
         let _: () = objc2::msg_send![ns, setStyleMask: next_mask];
         panel_log(&format!(
@@ -223,8 +731,96 @@ fn setup_panel(app_handle: &tauri::AppHandle) {
     // so clicks on our own tray icon are excluded automatically.
     let click_guard = Arc::new(AtomicU64::new(0));
     setup_click_monitors(app_handle.clone(), click_guard.clone());
+    setup_status_event_tap(app_handle.clone());
     app_handle.manage(click_guard);
     panel_log("setup_panel: complete");
+}
+
+fn setup_status_event_tap(app_handle: tauri::AppHandle) {
+    if STATUS_EVENT_TAP_INSTALLED.set(()).is_err() {
+        return;
+    }
+
+    std::thread::Builder::new()
+        .name("observer-status-event-tap".to_string())
+        .spawn(move || {
+            let tap = match core_graphics::event::CGEventTap::new(
+                core_graphics::event::CGEventTapLocation::Session,
+                core_graphics::event::CGEventTapPlacement::HeadInsertEventTap,
+                core_graphics::event::CGEventTapOptions::ListenOnly,
+                vec![core_graphics::event::CGEventType::LeftMouseDown],
+                move |_proxy, _event_type, event| {
+                    let location = event.location();
+                    let main_handle = app_handle.clone();
+                    let toggle_handle = app_handle.clone();
+                    if let Err(error) = main_handle.run_on_main_thread(move || {
+                        handle_status_event_tap_click(toggle_handle, location.x, location.y);
+                    }) {
+                        panel_log(&format!("event tap: main thread dispatch failed: {error}"));
+                    }
+
+                    None
+                },
+            ) {
+                Ok(tap) => tap,
+                Err(_) => {
+                    panel_log("event tap: install failed");
+                    return;
+                }
+            };
+
+            let loop_source = match tap.mach_port.create_runloop_source(0) {
+                Ok(source) => source,
+                Err(_) => {
+                    panel_log("event tap: runloop source failed");
+                    return;
+                }
+            };
+
+            let run_loop = core_foundation::runloop::CFRunLoop::get_current();
+            let common_modes = unsafe { core_foundation::runloop::kCFRunLoopCommonModes };
+            run_loop.add_source(&loop_source, common_modes);
+            tap.enable();
+            panel_log("event tap: installed on worker runloop");
+            core_foundation::runloop::CFRunLoop::run_current();
+        })
+        .map(|_| panel_log("event tap: worker started"))
+        .unwrap_or_else(|error| panel_log(&format!("event tap: worker start failed: {error}")));
+}
+
+fn handle_status_event_tap_click(app_handle: tauri::AppHandle, quartz_x: f64, quartz_y: f64) {
+    let mouse = objc2_app_kit::NSEvent::mouseLocation();
+    let debug_index = EVENT_TAP_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if debug_index < 8 {
+        panel_log(&format!(
+            "event tap: left down quartz=({:.1},{:.1}) appkit_mouse=({:.1},{:.1})",
+            quartz_x, quartz_y, mouse.x, mouse.y
+        ));
+    }
+
+    let Some(rect) = native_status_button_rect() else {
+        return;
+    };
+    let Some(anchor) = appkit_anchor_from_rect(rect) else {
+        return;
+    };
+    let Some(hit_anchor) = appkit_status_button_anchor_for_mouse_quiet(anchor, mouse.x, mouse.y)
+    else {
+        return;
+    };
+
+    panel_log(&format!(
+        "event tap: status hit quartz=({:.1},{:.1}) mouse=({:.1},{:.1}) rect=({:.1},{:.1},{:.1},{:.1})",
+        quartz_x,
+        quartz_y,
+        mouse.x,
+        mouse.y,
+        hit_anchor.rect.x,
+        hit_anchor.rect.y,
+        hit_anchor.rect.width,
+        hit_anchor.rect.height
+    ));
+    toggle_panel_with_claimed_appkit_anchor(app_handle, hit_anchor, "event-tap-status-hit");
 }
 
 fn setup_click_monitors(app_handle: tauri::AppHandle, click_guard: Arc<AtomicU64>) {
@@ -233,56 +829,66 @@ fn setup_click_monitors(app_handle: tauri::AppHandle, click_guard: Arc<AtomicU64
     );
 
     let local_handle = app_handle.clone();
-    let local_block = block2::RcBlock::new(move |event: std::ptr::NonNull<objc2_app_kit::NSEvent>| {
-        let event_ref = unsafe { event.as_ref() };
-        if let Some(anchor) = appkit_status_button_anchor_for_event(event_ref) {
-            panel_log("local click: status button hit");
-            toggle_panel_with_claimed_appkit_anchor(
-                local_handle.clone(),
-                anchor,
-                "local-status-hit",
-            );
-        } else if hide_panel_for_transparent_gutter_click(&local_handle, event_ref) {
-            return std::ptr::null_mut();
-        }
+    let local_block =
+        block2::RcBlock::new(move |event: std::ptr::NonNull<objc2_app_kit::NSEvent>| {
+            let event_ref = unsafe { event.as_ref() };
+            if let Some(anchor) = appkit_status_button_anchor_for_event(event_ref) {
+                panel_log("local click: status button hit");
+                toggle_panel_with_claimed_appkit_anchor(
+                    local_handle.clone(),
+                    anchor,
+                    "local-status-hit",
+                );
+            } else if hide_panel_for_transparent_gutter_click(&local_handle, event_ref) {
+                return std::ptr::null_mut();
+            }
 
-        event.as_ptr()
-    });
+            event.as_ptr()
+        });
 
     let _local_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>> = unsafe {
         objc2_app_kit::NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &*local_block)
     };
 
-    let global_block = block2::RcBlock::new(move |_event: std::ptr::NonNull<objc2_app_kit::NSEvent>| {
-        if now_millis() < click_guard.load(Ordering::Relaxed) {
-            panel_log("global click: skipped by guard");
-            return;
-        }
+    let global_block = block2::RcBlock::new(
+        move |event: std::ptr::NonNull<objc2_app_kit::NSEvent>| {
+            let event_ref = unsafe { event.as_ref() };
+            if now_millis() < click_guard.load(Ordering::Relaxed) {
+                panel_log("global click: skipped by guard");
+                return;
+            }
 
-        if let Some(anchor) = appkit_status_button_anchor_from_tray(&app_handle) {
-            let mouse = objc2_app_kit::NSEvent::mouseLocation();
-            if let Some(hit_anchor) = appkit_status_button_anchor_for_mouse(anchor, mouse.x, mouse.y) {
-                let rect = hit_anchor.rect;
-                panel_log(&format!(
+            if let Some(anchor) = native_status_button_anchor() {
+                let mouse = appkit_global_click_point(event_ref);
+                if let Some(hit_anchor) =
+                    appkit_status_button_anchor_for_mouse(anchor, mouse.x, mouse.y)
+                {
+                    let rect = hit_anchor.rect;
+                    panel_log(&format!(
                     "global click: status button hit mouse=({:.1},{:.1}) rect=({:.1},{:.1},{:.1},{:.1})",
                     mouse.x, mouse.y, rect.x, rect.y, rect.width, rect.height
                 ));
-                toggle_panel_with_claimed_appkit_anchor(app_handle.clone(), hit_anchor, "global-status-hit");
-                return;
+                    toggle_panel_with_claimed_appkit_anchor(
+                        app_handle.clone(),
+                        hit_anchor,
+                        "global-status-hit",
+                    );
+                    return;
+                }
             }
-        }
 
-        if let Ok(panel) = app_handle.get_webview_panel("panel") {
-            if panel.is_visible() {
-                panel_log("global click: visible -> hide");
-                panel.hide();
+            if let Ok(panel) = app_handle.get_webview_panel("panel") {
+                if panel.is_visible() {
+                    panel_log("global click: visible -> hide");
+                    panel.hide();
+                } else {
+                    panel_log("global click: panel already hidden");
+                }
             } else {
-                panel_log("global click: panel already hidden");
+                panel_log("global click: panel lookup failed");
             }
-        } else {
-            panel_log("global click: panel lookup failed");
-        }
-    });
+        },
+    );
 
     let _global_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>> =
         objc2_app_kit::NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &*global_block);
@@ -293,126 +899,149 @@ fn setup_click_monitors(app_handle: tauri::AppHandle, click_guard: Arc<AtomicU64
     std::mem::forget(global_block);
 }
 
-fn install_tauri_status_item(app_handle: &tauri::AppHandle) {
-    let icon = match tauri::image::Image::from_bytes(include_bytes!("../icons/tray-default.png")) {
-        Ok(icon) => icon,
-        Err(error) => {
-            panel_log(&format!("tauri status item: icon load failed: {error}"));
-            return;
-        }
-    };
-
-    let tray_handle = app_handle.clone();
-    match TrayIconBuilder::with_id(TRAY_ID)
-        .tooltip("观察者")
-        .icon(icon)
-        .icon_as_template(true)
-        .show_menu_on_left_click(false)
-        .on_tray_icon_event(move |_tray, event| {
-            handle_tray_event(tray_handle.clone(), event, "builder");
-        })
-        .build(app_handle)
-    {
-        Ok(_) => {
-            panel_log("tauri status item: installed");
-            install_status_button_action(app_handle);
-        }
-        Err(error) => panel_log(&format!("tauri status item: install failed: {error}")),
-    }
-}
-
-fn install_status_button_action(app_handle: &tauri::AppHandle) {
-    let Some(tray) = app_handle.tray_by_id(TRAY_ID) else {
-        panel_log("status button action: tray lookup failed");
+fn install_native_status_item(app_handle: &tauri::AppHandle) {
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
+        panel_log("native status item: no main thread marker");
         return;
     };
 
-    let action_handle = app_handle.clone();
-    let install_result = tray.with_inner_tray_icon({
-        move |inner| {
-            let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
-                panel_log("status button action: no main thread marker");
-                return false;
-            };
-            let Some(status_item) = inner.ns_status_item() else {
-                return false;
-            };
-            let Some(button) = status_item.button(mtm) else {
-                return false;
-            };
+    let status_item = objc2_app_kit::NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
+    let target = status_action::TrayActionTarget::new(app_handle.clone(), mtm);
+    let mut custom_button: Option<objc2::rc::Retained<status_action::StatusButton>> = None;
 
-            if let Some(image) = objc2_app_kit::NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                &objc2_foundation::NSString::from_str("eye"),
-                Some(&objc2_foundation::NSString::from_str("观察者")),
-            ) {
-                image.setTemplate(true);
-                button.setImage(Some(&image));
-            }
-
-            let target = status_action::TrayActionTarget::new(action_handle.clone(), mtm);
-            unsafe {
-                let target_object: &objc2::runtime::AnyObject = (&*target).as_ref();
-                button.setTarget(Some(target_object));
-                button.setAction(Some(objc2::sel!(observerTrayIconClicked:)));
-                let previous_mask = button.sendActionOn(objc2_app_kit::NSEventMask::LeftMouseDown);
-                panel_log(&format!(
-                    "status button action: installed target previous_mask={previous_mask}"
-                ));
-            }
-            let _ = objc2::rc::Retained::into_raw(target);
-            true
+    if let Some(button) = status_item.button(mtm) {
+        let target_object: &objc2::runtime::AnyObject = (&*target).as_ref();
+        button.setTitle(&objc2_foundation::NSString::from_str("观察者"));
+        let overlay = status_action::StatusButton::new(app_handle.clone(), button.bounds(), mtm);
+        overlay.setWantsLayer(true);
+        overlay.setAutoresizingMask(
+            objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable
+                | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        overlay.setFrame(button.bounds());
+        button.addSubview(&overlay);
+        panel_log("native status item: custom overlay installed");
+        custom_button = Some(overlay);
+        unsafe {
+            status_item.setTarget(Some(target_object));
+            status_item.setAction(Some(objc2::sel!(observerNativeStatusClicked:)));
+            button.setTarget(Some(target_object));
+            button.setAction(Some(objc2::sel!(observerNativeStatusClicked:)));
+            let action_mask = objc2_app_kit::NSEventMask(
+                objc2_app_kit::NSEventMask::LeftMouseDown.0
+                    | objc2_app_kit::NSEventMask::LeftMouseUp.0,
+            );
+            let previous_mask = button.sendActionOn(action_mask);
+            let gesture = objc2_app_kit::NSClickGestureRecognizer::initWithTarget_action(
+                mtm.alloc(),
+                Some(target_object),
+                Some(objc2::sel!(observerNativeStatusGesture:)),
+            );
+            gesture.setButtonMask(1);
+            gesture.setNumberOfClicksRequired(1);
+            button.addGestureRecognizer(&gesture);
+            let raw_gesture = objc2::rc::Retained::into_raw(gesture) as usize;
+            let _ = NATIVE_STATUS_GESTURE.set(raw_gesture);
+            panel_log(&format!(
+                "native status item: action installed previous_mask={previous_mask}"
+            ));
+            panel_log("native status item: gesture installed");
         }
+    } else {
+        panel_log("native status item: button unavailable");
+    }
+
+    let raw_status = objc2::rc::Retained::into_raw(status_item) as usize;
+    let raw_target = objc2::rc::Retained::into_raw(target) as usize;
+    let _ = NATIVE_STATUS_ITEM.set(raw_status);
+    if let Some(custom_button) = custom_button {
+        let raw_button = objc2::rc::Retained::into_raw(custom_button) as usize;
+        let _ = NATIVE_STATUS_BUTTON.set(raw_button);
+    }
+    let _ = NATIVE_STATUS_TARGET.set(raw_target);
+
+    panel_log("native status item: installed");
+    update_tray_health(app_handle, &[]);
+}
+
+fn configure_native_status_button(button: &objc2_app_kit::NSButton) {
+    button.setTitle(&objc2_foundation::NSString::from_str("观察者"));
+    button.setBordered(false);
+    button.setTransparent(false);
+    button.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeft);
+    button.setToolTip(Some(&objc2_foundation::NSString::from_str("观察者")));
+}
+
+fn apply_tray_health_state(_app_handle: &tauri::AppHandle, state: TrayHealthState, tooltip: &str) {
+    if apply_native_status_health_state(state, tooltip) {
+        panel_log(&format!("tray health: updated native state={state:?}"));
+        return;
+    }
+
+    panel_log(&format!(
+        "tray health: native update failed state={state:?}"
+    ));
+}
+
+fn apply_native_status_health_state(state: TrayHealthState, tooltip: &str) -> bool {
+    let Some(status_item) = native_status_item() else {
+        return false;
+    };
+
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
+        panel_log("native status health: no main thread marker");
+        return false;
+    };
+
+    let Some(image) = native_status_image_from_bytes(state.icon_bytes()) else {
+        panel_log("native status health: image unavailable");
+        return false;
+    };
+
+    image.setTemplate(true);
+    image.setSize(objc2_foundation::NSSize {
+        width: 18.0,
+        height: 18.0,
     });
-
-    match install_result {
-        Ok(true) => {}
-        Ok(false) => panel_log("status button action: status item/button unavailable"),
-        Err(error) => panel_log(&format!("status button action: install failed: {error}")),
-    }
-}
-
-fn handle_tray_event(app_handle: tauri::AppHandle, event: TrayIconEvent, source: &str) {
-    panel_log(&format!("tray {source} event: {event:?}"));
-    if let TrayIconEvent::Click {
-        button: MouseButton::Left,
-        button_state: MouseButtonState::Down,
-        rect,
-        ..
-    } = event
-    {
-        panel_log(&format!("tray {source}: left down rect={rect:?}"));
-        if claim_tray_toggle(source) {
-            toggle_panel(app_handle, Some(&rect));
+    if let Some(button) = status_item.button(mtm) {
+        configure_native_status_button(&button);
+        button.setImage(Some(&image));
+        button.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeft);
+        button.setToolTip(Some(&objc2_foundation::NSString::from_str(tooltip)));
+        if let Some(overlay) = native_custom_status_button() {
+            overlay.setFrame(button.bounds());
         }
+    } else {
+        panel_log("native status health: button unavailable");
+        return false;
     }
+
+    if let Some(rect) = native_status_button_rect() {
+        panel_log(&format!(
+            "native status health: rect=({:.1},{:.1},{:.1},{:.1})",
+            rect.x, rect.y, rect.width, rect.height
+        ));
+    }
+
+    true
 }
 
-fn toggle_panel_at_appkit_sender(
-    app_handle: tauri::AppHandle,
-    sender: &objc2::runtime::AnyObject,
-    source: &str,
-) {
+fn native_status_image_from_bytes(
+    bytes: &'static [u8],
+) -> Option<objc2::rc::Retained<objc2_app_kit::NSImage>> {
+    let data = objc2_foundation::NSData::from_vec(bytes.to_vec());
+    objc2_app_kit::NSImage::initWithData(objc2_app_kit::NSImage::alloc(), &data)
+}
+
+fn toggle_panel_at_native_status_anchor(app_handle: tauri::AppHandle, source: &str) {
     if !claim_tray_toggle(source) {
         return;
     }
 
-    if let Some(anchor) = appkit_anchor_from_sender(sender) {
+    if let Some(anchor) = native_status_button_anchor() {
         toggle_panel_with_appkit_anchor(app_handle, anchor, source);
     } else {
-        panel_log(&format!("tray {source}: sender anchor unavailable"));
-        toggle_panel(app_handle, None);
-    }
-}
-
-fn toggle_panel_at_appkit_senderless(app_handle: tauri::AppHandle, source: &str) {
-    if !claim_tray_toggle(source) {
-        return;
-    }
-
-    if let Some(anchor) = appkit_status_button_anchor() {
-        toggle_panel_with_appkit_anchor(app_handle, anchor, source);
-    } else {
-        panel_log(&format!("tray {source}: status button anchor unavailable"));
+        panel_log(&format!("tray {source}: native status anchor unavailable"));
         toggle_panel(app_handle, None);
     }
 }
@@ -485,6 +1114,39 @@ fn toggle_panel(app_handle: tauri::AppHandle, rect: Option<&tauri::Rect>) {
     show_panel(app_handle, panel, anchor_x);
 }
 
+fn reveal_panel(app_handle: tauri::AppHandle, source: &str) {
+    panel_log(&format!("reveal_panel: begin source={source}"));
+    let Ok(panel) = app_handle.get_webview_panel("panel") else {
+        panel_log("reveal_panel: panel lookup failed");
+        return;
+    };
+
+    let anchor_x = if let Some(anchor) = appkit_menu_bar_anchor() {
+        let placement = appkit_panel_placement(anchor);
+        let set_frame_ok = set_appkit_panel_frame(&app_handle, placement);
+        panel_log(&format!(
+            "reveal_panel: source={source} mouse=({:.1},{:.1}) monitor=({:.1},{:.1},{:.1},{:.1}) panel=({:.1},{:.1},{:.1},{:.1}) set_frame_ok={}",
+            anchor.mouse_x,
+            anchor.mouse_y,
+            anchor.monitor_x,
+            anchor.monitor_y,
+            anchor.monitor_width,
+            anchor.monitor_height,
+            placement.x,
+            placement.y,
+            placement.width,
+            placement.height,
+            set_frame_ok
+        ));
+        ((PANEL_WIDTH - PANEL_ANCHOR_INSET) / PANEL_WIDTH) * 100.0
+    } else {
+        panel_log("reveal_panel: appkit anchor unavailable");
+        50.0
+    };
+
+    show_panel(app_handle, panel, anchor_x);
+}
+
 fn show_panel(app_handle: tauri::AppHandle, panel: Arc<dyn Panel>, anchor_x: f64) {
     if let Some(click_guard) = app_handle.try_state::<Arc<AtomicU64>>() {
         panel_log("toggle_panel: setting click guard");
@@ -503,9 +1165,15 @@ fn show_panel(app_handle: tauri::AppHandle, panel: Arc<dyn Panel>, anchor_x: f64
     panel_log("toggle_panel: show_and_make_key");
     panel.show_and_make_key();
     panel.order_front_regardless();
-    panel_log(&format!("toggle_panel: visible_after_show={}", panel.is_visible()));
+    log_panel_window_state(&panel, "after-show");
+    panel_log(&format!(
+        "toggle_panel: visible_after_show={}",
+        panel.is_visible()
+    ));
     let _ = app_handle.emit("panel-shown", anchor_x);
-    panel_log(&format!("toggle_panel: emitted panel-shown anchor={anchor_x:.2}"));
+    panel_log(&format!(
+        "toggle_panel: emitted panel-shown anchor={anchor_x:.2}"
+    ));
 }
 
 fn position_panel(app_handle: &tauri::AppHandle, rect: &tauri::Rect) -> Option<f64> {
@@ -725,6 +1393,59 @@ fn hide_panel_for_transparent_gutter_click(
     true
 }
 
+fn log_panel_window_state(panel: &Arc<dyn Panel>, source: &str) {
+    unsafe {
+        let ns = panel.as_panel();
+        let frame: objc2_foundation::NSRect = objc2::msg_send![ns, frame];
+        let alpha: f64 = objc2::msg_send![ns, alphaValue];
+        let is_visible: bool = objc2::msg_send![ns, isVisible];
+        let is_key: bool = objc2::msg_send![ns, isKeyWindow];
+        let is_opaque: bool = objc2::msg_send![ns, isOpaque];
+        panel_log(&format!(
+            "panel state {source}: frame=({:.1},{:.1},{:.1},{:.1}) alpha={:.2} visible={} key={} opaque={}",
+            frame.origin.x,
+            frame.origin.y,
+            frame.size.width,
+            frame.size.height,
+            alpha,
+            is_visible,
+            is_key,
+            is_opaque
+        ));
+    }
+}
+
+fn appkit_global_click_point(event: &objc2_app_kit::NSEvent) -> objc2_foundation::NSPoint {
+    let event_location = event.locationInWindow();
+    let current_mouse = objc2_app_kit::NSEvent::mouseLocation();
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
+        panel_log(&format!(
+            "global click point: event=({:.1},{:.1}) current=({:.1},{:.1}) no_mtm",
+            event_location.x, event_location.y, current_mouse.x, current_mouse.y
+        ));
+        return event_location;
+    };
+    let Some(window) = event.window(mtm) else {
+        panel_log(&format!(
+            "global click point: event=({:.1},{:.1}) current=({:.1},{:.1}) no_window",
+            event_location.x, event_location.y, current_mouse.x, current_mouse.y
+        ));
+        return event_location;
+    };
+
+    let screen_location = window.convertPointToScreen(event_location);
+    panel_log(&format!(
+        "global click point: event=({:.1},{:.1}) screen=({:.1},{:.1}) current=({:.1},{:.1})",
+        event_location.x,
+        event_location.y,
+        screen_location.x,
+        screen_location.y,
+        current_mouse.x,
+        current_mouse.y
+    ));
+    screen_location
+}
+
 fn set_appkit_panel_frame(app_handle: &tauri::AppHandle, placement: AppKitPlacement) -> bool {
     let Ok(panel) = app_handle.get_webview_panel("panel") else {
         panel_log("appkit set frame: panel lookup failed");
@@ -780,19 +1501,7 @@ impl AppKitRect {
     }
 }
 
-fn appkit_anchor_from_sender(sender: &objc2::runtime::AnyObject) -> Option<AppKitAnchor> {
-    let view = sender.downcast_ref::<objc2_app_kit::NSView>()?;
-    let rect = appkit_view_screen_rect(view)?;
-    panel_log(&format!(
-        "appkit sender anchor: rect=({:.1},{:.1},{:.1},{:.1})",
-        rect.x, rect.y, rect.width, rect.height
-    ));
-    appkit_anchor_from_rect(rect)
-}
-
-fn appkit_status_button_anchor_for_event(
-    event: &objc2_app_kit::NSEvent,
-) -> Option<AppKitAnchor> {
+fn appkit_status_button_anchor_for_event(event: &objc2_app_kit::NSEvent) -> Option<AppKitAnchor> {
     let mtm = objc2_foundation::MainThreadMarker::new()?;
     let window = event.window(mtm)?;
     let rect = appkit_rect_from_ns_rect(window.frame());
@@ -814,31 +1523,65 @@ fn appkit_status_button_anchor_for_event(
     appkit_anchor_from_rect(rect)
 }
 
-fn appkit_status_button_anchor_from_tray(app_handle: &tauri::AppHandle) -> Option<AppKitAnchor> {
-    let tray = app_handle.tray_by_id(TRAY_ID)?;
-    match tray.with_inner_tray_icon(|inner| {
-        let mtm = objc2_foundation::MainThreadMarker::new()?;
-        let status_item = inner.ns_status_item()?;
-        let button = status_item.button(mtm)?;
-        let rect = appkit_view_screen_rect(&button)?;
-        panel_log(&format!(
-            "appkit tray anchor: rect=({:.1},{:.1},{:.1},{:.1})",
-            rect.x, rect.y, rect.width, rect.height
-        ));
-        appkit_anchor_from_rect(rect)
-    }) {
-        Ok(anchor) => anchor,
-        Err(error) => {
-            panel_log(&format!("appkit tray anchor: lookup failed: {error}"));
-            None
-        }
+fn native_status_item() -> Option<&'static objc2_app_kit::NSStatusItem> {
+    let ptr = *NATIVE_STATUS_ITEM.get()? as *mut objc2_app_kit::NSStatusItem;
+    if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { &*ptr })
     }
+}
+
+fn native_custom_status_button() -> Option<&'static objc2_app_kit::NSView> {
+    let ptr = *NATIVE_STATUS_BUTTON.get()? as *mut objc2_app_kit::NSView;
+    if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { &*ptr })
+    }
+}
+
+fn native_status_button_rect() -> Option<AppKitRect> {
+    if let Some(button) = native_custom_status_button() {
+        return appkit_view_screen_rect(button);
+    }
+
+    let mtm = objc2_foundation::MainThreadMarker::new()?;
+    let status_item = native_status_item()?;
+    let button = status_item.button(mtm)?;
+    appkit_view_screen_rect(&button)
+}
+
+fn native_status_button_anchor() -> Option<AppKitAnchor> {
+    let rect = native_status_button_rect()?;
+    panel_log(&format!(
+        "native status anchor: rect=({:.1},{:.1},{:.1},{:.1})",
+        rect.x, rect.y, rect.width, rect.height
+    ));
+    appkit_anchor_from_rect(rect)
 }
 
 fn appkit_status_button_anchor_for_mouse(
     base_anchor: AppKitAnchor,
     mouse_x: f64,
     mouse_y: f64,
+) -> Option<AppKitAnchor> {
+    appkit_status_button_anchor_for_mouse_inner(base_anchor, mouse_x, mouse_y, true)
+}
+
+fn appkit_status_button_anchor_for_mouse_quiet(
+    base_anchor: AppKitAnchor,
+    mouse_x: f64,
+    mouse_y: f64,
+) -> Option<AppKitAnchor> {
+    appkit_status_button_anchor_for_mouse_inner(base_anchor, mouse_x, mouse_y, false)
+}
+
+fn appkit_status_button_anchor_for_mouse_inner(
+    base_anchor: AppKitAnchor,
+    mouse_x: f64,
+    mouse_y: f64,
+    log_miss: bool,
 ) -> Option<AppKitAnchor> {
     if base_anchor.rect.contains(mouse_x, mouse_y, 4.0) {
         return Some(base_anchor);
@@ -865,28 +1608,66 @@ fn appkit_status_button_anchor_for_mouse(
             height: base_anchor.rect.height,
         };
 
-        panel_log(&format!(
-            "appkit tray anchor remap: screen=({:.1},{:.1},{:.1},{:.1}) rect=({:.1},{:.1},{:.1},{:.1})",
-            frame.x, frame.y, frame.width, frame.height, rect.x, rect.y, rect.width, rect.height
-        ));
+        if log_miss {
+            panel_log(&format!(
+                "appkit tray anchor remap: screen=({:.1},{:.1},{:.1},{:.1}) rect=({:.1},{:.1},{:.1},{:.1})",
+                frame.x, frame.y, frame.width, frame.height, rect.x, rect.y, rect.width, rect.height
+            ));
+        }
 
-        if rect.contains(mouse_x, mouse_y, 8.0) {
+        if rect.contains(mouse_x, mouse_y, 8.0)
+            || appkit_status_button_menu_bar_fallback_hit(frame, rect, mouse_x, mouse_y)
+        {
             return appkit_anchor_from_rect(rect);
         }
+    }
+
+    if log_miss {
+        panel_log(&format!(
+            "appkit tray anchor miss: mouse=({:.1},{:.1}) base=({:.1},{:.1},{:.1},{:.1})",
+            mouse_x,
+            mouse_y,
+            base_anchor.rect.x,
+            base_anchor.rect.y,
+            base_anchor.rect.width,
+            base_anchor.rect.height
+        ));
     }
 
     None
 }
 
-fn appkit_status_button_anchor() -> Option<AppKitAnchor> {
-    let mtm = objc2_foundation::MainThreadMarker::new()?;
-    let tray = objc2_app_kit::NSApp(mtm).currentEvent()?.window(mtm)?;
-    let rect = appkit_rect_from_ns_rect(tray.frame());
-    panel_log(&format!(
-        "appkit status button anchor: rect=({:.1},{:.1},{:.1},{:.1})",
-        rect.x, rect.y, rect.width, rect.height
-    ));
-    appkit_anchor_from_rect(rect)
+fn appkit_status_button_menu_bar_fallback_hit(
+    screen: AppKitRect,
+    rect: AppKitRect,
+    mouse_x: f64,
+    mouse_y: f64,
+) -> bool {
+    let horizontal_padding = 22.0;
+    let top_band_height = 48.0_f64.max(rect.height + 18.0);
+    let in_top_menu_bar_band =
+        mouse_y >= screen.max_y() - top_band_height && mouse_y <= screen.max_y() + 6.0;
+    let near_status_button_x =
+        mouse_x >= rect.x - horizontal_padding && mouse_x <= rect.max_x() + horizontal_padding;
+
+    if in_top_menu_bar_band && near_status_button_x {
+        panel_log(&format!(
+            "appkit tray anchor fallback hit: mouse=({:.1},{:.1}) screen=({:.1},{:.1},{:.1},{:.1}) rect=({:.1},{:.1},{:.1},{:.1})",
+            mouse_x,
+            mouse_y,
+            screen.x,
+            screen.y,
+            screen.width,
+            screen.height,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height
+        ));
+        true
+    } else {
+        false
+    }
 }
 
 fn appkit_view_screen_rect(view: &objc2_app_kit::NSView) -> Option<AppKitRect> {
@@ -955,7 +1736,11 @@ fn appkit_menu_bar_anchor() -> Option<AppKitAnchor> {
         .map(|screen| appkit_anchor_from_screen(mouse.x, mouse.y, &screen))
 }
 
-fn appkit_anchor_from_screen(mouse_x: f64, mouse_y: f64, screen: &objc2_app_kit::NSScreen) -> AppKitAnchor {
+fn appkit_anchor_from_screen(
+    mouse_x: f64,
+    mouse_y: f64,
+    screen: &objc2_app_kit::NSScreen,
+) -> AppKitAnchor {
     appkit_anchor_from_screen_with_rect(
         mouse_x,
         mouse_y,

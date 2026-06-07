@@ -21,6 +21,18 @@
         "decorations": false,
         "resizable": false,
         "transparent": true
+      },
+      {
+        "label": "dashboard",
+        "title": "观察者",
+        "width": 1120,
+        "height": 720,
+        "minWidth": 920,
+        "minHeight": 600,
+        "visible": false,
+        "decorations": true,
+        "resizable": true,
+        "transparent": false
       }
     ]
   },

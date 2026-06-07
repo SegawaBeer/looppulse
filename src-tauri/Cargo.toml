@@ -17,8 +17,10 @@ window-vibrancy = "0.6"
 
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
-objc2-app-kit = { version = "0.3", features = ["block2", "NSEvent"] }
+objc2-app-kit = { version = "0.3", features = ["block2", "NSEvent", "NSButton", "NSButtonCell", "NSCell", "NSClickGestureRecognizer", "NSControl", "NSGestureRecognizer", "NSImage", "NSResponder", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView"] }
 block2 = "0.6"
+core-foundation = "0.10"
+core-graphics = "0.24"
 
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
 monitor = { git = "https://github.com/ahkohd/tauri-toolkit", branch = "v2" }
