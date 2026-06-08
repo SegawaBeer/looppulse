@@ -281,6 +281,19 @@
     hint: string;
   }
 
+  interface PanelHeatmapCell {
+    tone: "ok" | "work" | "warning" | "critical" | "info" | "idle";
+    opacity: number;
+    title: string;
+  }
+
+  interface PanelMetricItem {
+    label: string;
+    value: string;
+    hint: string;
+    tone: "ok" | "work" | "warning" | "critical" | "info";
+  }
+
   const agentOptions = ["Claude Code", "Codex", "OpenCode"];
   const remoteFieldOptions: RemoteFieldOption[] = [
     { key: "identity", label: "身份", free: true },
@@ -2119,6 +2132,112 @@
     if (warningOnlyCount > 0) return `${warningOnlyCount} 注意`;
     return "健康";
   }
+
+  function healthScore(): number {
+    if (totalCount === 0) return 100;
+    const orphanPenalty = Math.min(16, monitorSnapshot.orphan_ports.length * 4);
+    const conflictPenalty = Math.min(16, monitorSnapshot.port_conflicts.length * 8);
+    const quotaPenalty = monitorSnapshot.rate_limits.some((limit) =>
+      (limit.five_hour_percent ?? 0) >= 90 || (limit.seven_day_percent ?? 0) >= 90
+    ) ? 12 : 0;
+    const score = 100
+      - criticalCount * 26
+      - warningOnlyCount * 12
+      - orphanPenalty
+      - conflictPenalty
+      - quotaPenalty;
+    return Math.max(8, Math.min(100, score));
+  }
+
+  function healthScoreLabel(): string {
+    const score = healthScore();
+    if (score >= 92) return "状态稳定";
+    if (score >= 76) return "保持观察";
+    if (score >= 52) return "需要关注";
+    return "建议介入";
+  }
+
+  function overviewSignalLine(): string {
+    if (totalCount === 0) return "等待会话";
+    if (criticalCount > 0) return `${criticalCount} 个高危信号`;
+    if (warningOnlyCount > 0) return `${warningOnlyCount} 个注意信号`;
+    if (activeCount > 0) return `${activeCount} 个 Agent 工作中`;
+    return "所有会话待命";
+  }
+
+  function heatToneForSession(session: AgentSession): PanelHeatmapCell["tone"] {
+    if (session.risk_level === "critical") return "critical";
+    if (session.risk_level === "warning") return "warning";
+    if (session.risk_level === "info") return "info";
+    if (wasActive(session.status)) return "work";
+    if (["waiting", "idle"].includes(session.status)) return "ok";
+    return "idle";
+  }
+
+  function heatToneForEvent(event: SessionEvent): PanelHeatmapCell["tone"] {
+    if (event.severity === "critical") return "critical";
+    if (event.severity === "warning") return "warning";
+    if (event.severity === "info") return "info";
+    if (event.kind === "completed") return "ok";
+    return "idle";
+  }
+
+  function panelHeatmapCells(): PanelHeatmapCell[] {
+    const eventCells = eventHistory.slice(0, 30).reverse().map((event, index) => ({
+      tone: heatToneForEvent(event),
+      opacity: Math.min(1, 0.42 + index / 44),
+      title: `${event.projectName} · ${event.title}`
+    }));
+    if (eventCells.length > 0) {
+      const padding = Array.from({ length: Math.max(0, 30 - eventCells.length) }, () => ({
+        tone: "idle" as const,
+        opacity: 0.22,
+        title: "暂无历史信号"
+      }));
+      return [...padding, ...eventCells].slice(-30);
+    }
+
+    if (sessions.length === 0) {
+      return Array.from({ length: 30 }, () => ({
+        tone: "idle" as const,
+        opacity: 0.22,
+        title: "等待 Agent 会话"
+      }));
+    }
+
+    return Array.from({ length: 30 }, (_, index) => {
+      const session = sessions[index % sessions.length];
+      const tone = heatToneForSession(session);
+      return {
+        tone,
+        opacity: Math.min(1, 0.34 + ((index % 10) / 18)),
+        title: `${sessionTitle(session)} · ${riskLabel(session.risk_level)} · ${statusLabel(session.status)}`
+      };
+    });
+  }
+
+  function panelMetricItems(): PanelMetricItem[] {
+    return [
+      {
+        label: "工作中",
+        value: `${activeCount}`,
+        hint: `${totalCount} sessions`,
+        tone: activeCount > 0 ? "work" : "ok"
+      },
+      {
+        label: "风险",
+        value: `${criticalCount + warningOnlyCount}`,
+        hint: criticalCount > 0 ? `${criticalCount} critical` : `${warningOnlyCount} warning`,
+        tone: criticalCount > 0 ? "critical" : warningOnlyCount > 0 ? "warning" : "ok"
+      },
+      {
+        label: "Token",
+        value: formatTokens(totalTokenCount) || "0",
+        hint: quotaOrMcpSummary(),
+        tone: "info"
+      }
+    ];
+  }
 </script>
 
 {#if currentWindowLabel === "dashboard"}
@@ -2515,9 +2634,9 @@
       </h1>
       <p class="subtitle">
         {#if totalCount === 0}
-          暂无运行中的 Agent
+          本地 Agent 运行健康监控
         {:else}
-          <span class="accent">{totalCount}</span> 会话 · <span class="accent-orange">{activeCount}</span> 活跃 · <span class="accent">{formatTokens(totalTokenCount) || 0}</span> tokens
+          <span class="accent">{totalCount}</span> 会话 · <span class="accent-orange">{activeCount}</span> 活跃 · {overviewSignalLine()}
         {/if}
       </p>
     </div>
@@ -2534,23 +2653,28 @@
     </div>
   </header>
 
-  {#if totalCount > 0}
-    <section class="summary-strip">
-      <div class={`summary-item${activeCount > 0 ? " is-active" : ""}`}>
-        <span class="summary-value">{activeCount}</span>
-        <span class="summary-label">工作中</span>
+  {#if totalCount > 0 && !selectedSession}
+    <section class={`panel-overview risk-${overallStatus().label}`}>
+      <div class="overview-health-card">
+        <div class="overview-score">
+          <span>健康指数</span>
+          <strong style="color:{overallStatus().color}">{healthScore()}</strong>
+          <em>{healthScoreLabel()}</em>
+        </div>
+        <div class="overview-heatmap" aria-label="最近状态热力图">
+          {#each panelHeatmapCells() as cell}
+            <i class={`tone-${cell.tone}`} style:opacity={cell.opacity} title={cell.title}></i>
+          {/each}
+        </div>
       </div>
-      <div class={`summary-item${criticalCount > 0 ? " is-critical" : ""}`}>
-        <span class="summary-value">{criticalCount}</span>
-        <span class="summary-label">高危</span>
-      </div>
-      <div class={`summary-item${warningOnlyCount > 0 ? " is-warning" : ""}`}>
-        <span class="summary-value">{warningOnlyCount}</span>
-        <span class="summary-label">注意</span>
-      </div>
-      <div class="summary-item">
-        <span class="summary-value">{formatTokens(totalTokenCount) || "0"}</span>
-        <span class="summary-label">Token</span>
+      <div class="overview-metrics">
+        {#each panelMetricItems() as metric}
+          <div class={`overview-metric tone-${metric.tone}`}>
+            <span>{metric.label}</span>
+            <strong>{metric.value}</strong>
+            <em>{metric.hint}</em>
+          </div>
+        {/each}
       </div>
     </section>
   {/if}
@@ -4568,15 +4692,142 @@
 
   .pro-summary .summary-value { color: var(--obs-text-secondary); }
 
+  .panel-overview {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 9px var(--obs-panel-padding-x) 8px;
+    background:
+      linear-gradient(180deg, rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.02)),
+      var(--obs-surface-sunken-strong);
+    border-bottom: 1px solid var(--obs-border-soft);
+  }
+
+  .overview-health-card {
+    min-height: 76px;
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    align-items: stretch;
+    gap: 9px;
+    padding: 10px;
+    border-radius: 11px;
+    border: 0.5px solid var(--obs-border-soft);
+    background:
+      radial-gradient(circle at 14% 18%, rgba(78, 202, 255, 0.12), transparent 38%),
+      rgba(255, 255, 255, 0.052);
+  }
+
+  .overview-score {
+    min-width: 0;
+  }
+
+  .overview-score span,
+  .overview-score em,
+  .overview-metric span,
+  .overview-metric em {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-style: normal;
+  }
+
+  .overview-score span {
+    font-size: 10px;
+    color: var(--obs-text-muted);
+  }
+
+  .overview-score strong {
+    display: block;
+    margin-top: 4px;
+    font-size: 32px;
+    line-height: 0.98;
+    letter-spacing: 0;
+  }
+
+  .overview-score em {
+    margin-top: 5px;
+    font-size: 10px;
+    color: var(--obs-text-secondary);
+  }
+
+  .overview-heatmap {
+    align-self: center;
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .overview-heatmap i {
+    display: block;
+    aspect-ratio: 1;
+    min-width: 0;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.045);
+  }
+
+  .overview-heatmap .tone-ok { background: var(--obs-status-ok); }
+  .overview-heatmap .tone-work { background: var(--obs-status-work); }
+  .overview-heatmap .tone-warning { background: var(--obs-status-warning); }
+  .overview-heatmap .tone-critical { background: var(--obs-status-critical); }
+  .overview-heatmap .tone-info { background: var(--obs-status-info); }
+  .overview-heatmap .tone-idle { background: rgba(255, 255, 255, 0.16); }
+
+  .overview-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .overview-metric {
+    min-width: 0;
+    height: 56px;
+    border-radius: 10px;
+    padding: 8px 9px;
+    border: 0.5px solid var(--obs-border-soft);
+    background: rgba(255, 255, 255, 0.054);
+  }
+
+  .overview-metric span {
+    font-size: 9.5px;
+    color: var(--obs-text-muted);
+  }
+
+  .overview-metric strong {
+    display: block;
+    margin-top: 4px;
+    font-size: 16px;
+    line-height: 1;
+    color: var(--obs-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .overview-metric em {
+    margin-top: 5px;
+    font-size: 9px;
+    color: var(--obs-text-faint);
+  }
+
+  .overview-metric.tone-ok strong { color: var(--obs-status-ok); }
+  .overview-metric.tone-work strong { color: var(--obs-status-work); }
+  .overview-metric.tone-warning strong { color: var(--obs-status-warning); }
+  .overview-metric.tone-critical strong { color: var(--obs-status-critical); }
+  .overview-metric.tone-info strong { color: var(--obs-status-info); }
+
   /* ── Body ── */
   .body {
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 9px 14px;
+    padding: 8px 14px;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 4px;
   }
 
   .body.detail-mode {
@@ -4627,7 +4878,7 @@
     color: inherit;
     background: var(--obs-surface-card);
     border-radius: var(--obs-card-radius);
-    padding: 7px 10px 6px;
+    padding: 6px 10px 6px;
     cursor: pointer;
     transition: background var(--obs-duration-fast) ease, border-color var(--obs-duration-fast) ease;
     border: 0.5px solid var(--obs-border-soft);
@@ -5322,7 +5573,7 @@
     grid-template-columns: 1fr auto;
     gap: 7px;
     align-items: end;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
   }
 
   .metric {
