@@ -32,6 +32,7 @@ const PANEL_GUTTER_TOP: f64 = 10.0;
 const PANEL_GUTTER_BOTTOM: f64 = 80.0;
 const PANEL_CLICK_GUARD_MS: u64 = 250;
 const PANEL_TRAY_DEBOUNCE_MS: u64 = 180;
+const STATUS_ITEM_WIDTH: f64 = 28.0;
 const PANEL_LOG_PATH: &str = "/tmp/observer-panel.log";
 
 static LAST_TRAY_TOGGLE_MS: AtomicU64 = AtomicU64::new(0);
@@ -227,7 +228,7 @@ impl TrayHealthState {
             Self::Critical => format!("观察者 · {critical} 个高危 · {total} 会话"),
             Self::Warning => format!("观察者 · {warning} 个注意 · {total} 会话"),
             Self::Active => format!("观察者 · {active} 个活跃 · {total} 会话"),
-            Self::Ok => format!("观察者 · 健康 · {total} 会话"),
+            Self::Ok => format!("观察者 · 正常 · {total} 会话"),
         }
     }
 }
@@ -905,13 +906,14 @@ fn install_native_status_item(app_handle: &tauri::AppHandle) {
         return;
     };
 
-    let status_item = objc2_app_kit::NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
+    let status_item =
+        objc2_app_kit::NSStatusBar::systemStatusBar().statusItemWithLength(STATUS_ITEM_WIDTH);
     let target = status_action::TrayActionTarget::new(app_handle.clone(), mtm);
     let mut custom_button: Option<objc2::rc::Retained<status_action::StatusButton>> = None;
 
     if let Some(button) = status_item.button(mtm) {
         let target_object: &objc2::runtime::AnyObject = (&*target).as_ref();
-        button.setTitle(&objc2_foundation::NSString::from_str("观察者"));
+        button.setTitle(&objc2_foundation::NSString::from_str(""));
         let overlay = status_action::StatusButton::new(app_handle.clone(), button.bounds(), mtm);
         overlay.setWantsLayer(true);
         overlay.setAutoresizingMask(
@@ -965,10 +967,10 @@ fn install_native_status_item(app_handle: &tauri::AppHandle) {
 }
 
 fn configure_native_status_button(button: &objc2_app_kit::NSButton) {
-    button.setTitle(&objc2_foundation::NSString::from_str("观察者"));
+    button.setTitle(&objc2_foundation::NSString::from_str(""));
     button.setBordered(false);
     button.setTransparent(false);
-    button.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeft);
+    button.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
     button.setToolTip(Some(&objc2_foundation::NSString::from_str("观察者")));
 }
 
@@ -1004,9 +1006,10 @@ fn apply_native_status_health_state(state: TrayHealthState, tooltip: &str) -> bo
         height: 18.0,
     });
     if let Some(button) = status_item.button(mtm) {
+        status_item.setLength(STATUS_ITEM_WIDTH);
         configure_native_status_button(&button);
         button.setImage(Some(&image));
-        button.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeft);
+        button.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
         button.setToolTip(Some(&objc2_foundation::NSString::from_str(tooltip)));
         if let Some(overlay) = native_custom_status_button() {
             overlay.setFrame(button.bounds());

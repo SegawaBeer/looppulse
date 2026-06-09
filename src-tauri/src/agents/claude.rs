@@ -360,6 +360,7 @@ fn parse_transcript(
         children: vec![],
         subagents,
         memory,
+        permission_observations: vec![],
         risk_level: "ok".to_string(),
         risks: vec![],
         capabilities,
@@ -436,6 +437,7 @@ fn parse_session_file(path: &PathBuf) -> Option<AgentSession> {
         children: vec![],
         subagents: vec![],
         memory: MemoryInfo::default(),
+        permission_observations: vec![],
         risk_level: "ok".to_string(),
         risks: vec![],
         capabilities: base_capabilities(),
@@ -685,7 +687,7 @@ mod tests {
         assert_eq!(session.conversation_summary.tool_turn_count, 1);
         assert_eq!(
             session.conversation_summary.title.as_deref(),
-            Some("调用 Edit")
+            Some("修改文件")
         );
         assert_ne!(
             session.conversation_summary.last_user_hint.as_deref(),

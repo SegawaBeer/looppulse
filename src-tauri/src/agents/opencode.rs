@@ -295,6 +295,7 @@ fn session_from_row(
         children: vec![],
         subagents: vec![],
         memory: MemoryInfo::default(),
+        permission_observations: vec![],
         risk_level: "ok".to_string(),
         risks: vec![],
         capabilities,

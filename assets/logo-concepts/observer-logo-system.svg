@@ -1,0 +1,203 @@
+<svg width="2048" height="2048" viewBox="0 0 2048 2048" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="appBase" x1="544" y1="198" x2="1504" y2="1254" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FDFF"/>
+      <stop offset="0.52" stop-color="#DDF7F3"/>
+      <stop offset="1" stop-color="#89DCCF"/>
+    </linearGradient>
+    <linearGradient id="appInner" x1="766" y1="456" x2="1282" y2="1104" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#C6F2EA"/>
+    </linearGradient>
+    <linearGradient id="tealPulse" x1="796" y1="510" x2="1296" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#45D9C4"/>
+      <stop offset="1" stop-color="#0F9F92"/>
+    </linearGradient>
+    <filter id="softShadow" x="420" y="116" width="1208" height="1264" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="42"/>
+      <feGaussianBlur stdDeviation="46"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.031 0 0 0 0 0.118 0 0 0 0 0.145 0 0 0 0.18 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow" result="shape"/>
+    </filter>
+    <filter id="tinyShadow" x="0" y="0" width="160" height="160" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#102A2D" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #F6F8F8; }
+      .ink { stroke: #203235; }
+      .muted { stroke: #829196; }
+      .label { fill: #405156; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-size: 34px; font-weight: 650; letter-spacing: 0; }
+      .note { fill: #6D7B80; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-size: 24px; font-weight: 520; letter-spacing: 0; }
+      .title { fill: #16262A; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; font-size: 56px; font-weight: 760; letter-spacing: 0; }
+      .mono { fill: #203235; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-size: 25px; font-weight: 620; letter-spacing: 0; }
+    </style>
+
+    <symbol id="state-normal" viewBox="0 0 160 160">
+      <rect x="18" y="22" width="124" height="116" rx="36" fill="#FFFFFF"/>
+      <rect x="18" y="22" width="124" height="116" rx="36" stroke="#203235" stroke-width="12"/>
+      <circle cx="80" cy="80" r="25" fill="#24B9A8"/>
+      <circle cx="88" cy="70" r="7" fill="#EFFFFC"/>
+    </symbol>
+
+    <symbol id="state-scanning" viewBox="0 0 160 160">
+      <rect x="18" y="22" width="124" height="116" rx="36" fill="#FFFFFF"/>
+      <rect x="18" y="22" width="124" height="116" rx="36" stroke="#203235" stroke-width="12"/>
+      <path d="M38 48C54 32 84 30 104 42" stroke="#2A9DFF" stroke-width="12" stroke-linecap="round"/>
+      <path d="M122 112C106 128 76 130 56 118" stroke="#2A9DFF" stroke-width="12" stroke-linecap="round"/>
+      <circle cx="80" cy="80" r="23" fill="#2A9DFF"/>
+      <circle cx="88" cy="70" r="7" fill="#F2FAFF"/>
+    </symbol>
+
+    <symbol id="state-minor" viewBox="0 0 160 160">
+      <rect x="18" y="22" width="124" height="116" rx="36" fill="#FFFFFF"/>
+      <rect x="18" y="22" width="124" height="116" rx="36" stroke="#203235" stroke-width="12"/>
+      <circle cx="80" cy="80" r="25" fill="#24B9A8"/>
+      <circle cx="119" cy="42" r="18" fill="#FFC247" stroke="#FFFFFF" stroke-width="7"/>
+      <circle cx="119" cy="42" r="5" fill="#7A4B00"/>
+    </symbol>
+
+    <symbol id="state-warning" viewBox="0 0 160 160">
+      <rect x="18" y="22" width="124" height="116" rx="36" fill="#FFF8EB"/>
+      <rect x="18" y="22" width="124" height="116" rx="36" stroke="#203235" stroke-width="12"/>
+      <path d="M39 126C48 102 58 88 80 88C102 88 112 102 121 126" stroke="#FF9D2F" stroke-width="12" stroke-linecap="round"/>
+      <circle cx="80" cy="73" r="23" fill="#FF9D2F"/>
+      <path d="M119 31V53" stroke="#8F4800" stroke-width="10" stroke-linecap="round"/>
+      <circle cx="119" cy="70" r="5.5" fill="#8F4800"/>
+    </symbol>
+
+    <symbol id="state-critical" viewBox="0 0 160 160">
+      <rect x="18" y="22" width="124" height="116" rx="36" fill="#FFF3F1"/>
+      <rect x="18" y="22" width="124" height="116" rx="36" stroke="#203235" stroke-width="12"/>
+      <path d="M35 44C50 28 111 28 125 44" stroke="#FF5C56" stroke-width="12" stroke-linecap="round"/>
+      <path d="M35 116C50 132 111 132 125 116" stroke="#FF5C56" stroke-width="12" stroke-linecap="round"/>
+      <circle cx="80" cy="80" r="25" fill="#FF5C56"/>
+      <rect x="114" y="31" width="12" height="45" rx="6" fill="#8C1713"/>
+      <circle cx="120" cy="91" r="6" fill="#8C1713"/>
+    </symbol>
+
+    <symbol id="state-paused" viewBox="0 0 160 160">
+      <rect x="18" y="22" width="124" height="116" rx="36" fill="#F7F8F8"/>
+      <rect x="18" y="22" width="124" height="116" rx="36" stroke="#6F7C80" stroke-width="12"/>
+      <rect x="64" y="57" width="13" height="46" rx="6.5" fill="#6F7C80"/>
+      <rect x="85" y="57" width="13" height="46" rx="6.5" fill="#6F7C80"/>
+    </symbol>
+
+    <symbol id="state-offline" viewBox="0 0 160 160">
+      <path d="M24 72V58C24 38.1 40.1 22 60 22H100C119.9 22 136 38.1 136 58V84" stroke="#8D989B" stroke-width="12" stroke-linecap="round"/>
+      <path d="M136 101V102C136 121.9 119.9 138 100 138H60C40.1 138 24 121.9 24 102V92" stroke="#8D989B" stroke-width="12" stroke-linecap="round"/>
+      <path d="M42 122L118 38" stroke="#8D989B" stroke-width="12" stroke-linecap="round"/>
+      <circle cx="80" cy="80" r="22" fill="#8D989B"/>
+    </symbol>
+
+    <symbol id="menubar-normal" viewBox="0 0 64 64">
+      <rect x="9" y="12" width="46" height="40" rx="16" stroke="currentColor" stroke-width="6" fill="none"/>
+      <circle cx="32" cy="32" r="9" fill="currentColor"/>
+    </symbol>
+    <symbol id="menubar-scanning" viewBox="0 0 64 64">
+      <rect x="9" y="12" width="46" height="40" rx="16" stroke="currentColor" stroke-width="6" fill="none"/>
+      <path d="M17 21C24 15 39 15 47 21" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="32" cy="32" r="8" fill="currentColor"/>
+    </symbol>
+    <symbol id="menubar-warning" viewBox="0 0 64 64">
+      <rect x="9" y="12" width="46" height="40" rx="16" stroke="currentColor" stroke-width="6" fill="none"/>
+      <circle cx="32" cy="32" r="8" fill="currentColor"/>
+      <path d="M50 10V23" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="50" cy="32" r="3" fill="currentColor"/>
+    </symbol>
+    <symbol id="menubar-paused" viewBox="0 0 64 64">
+      <rect x="9" y="12" width="46" height="40" rx="16" stroke="currentColor" stroke-width="6" fill="none"/>
+      <rect x="25" y="23" width="5" height="18" rx="2.5" fill="currentColor"/>
+      <rect x="34" y="23" width="5" height="18" rx="2.5" fill="currentColor"/>
+    </symbol>
+    <symbol id="menubar-offline" viewBox="0 0 64 64">
+      <path d="M10 29V27C10 18.7 16.7 12 25 12H39C47.3 12 54 18.7 54 27V35" stroke="currentColor" stroke-width="6" stroke-linecap="round" fill="none"/>
+      <path d="M54 42C52.7 48.8 46.5 52 39 52H25C16.7 52 10 45.3 10 37" stroke="currentColor" stroke-width="6" stroke-linecap="round" fill="none"/>
+      <path d="M17 50L48 14" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="32" cy="32" r="8" fill="currentColor"/>
+    </symbol>
+  </defs>
+
+  <rect class="bg" width="2048" height="2048"/>
+
+  <text x="132" y="150" class="title">观察者 Logo System</text>
+  <text x="132" y="202" class="note">Friendly observation window: one memorable shape, many status moods.</text>
+
+  <g filter="url(#softShadow)">
+    <rect x="560" y="276" width="928" height="928" rx="238" fill="url(#appBase)"/>
+    <rect x="614" y="330" width="820" height="820" rx="204" stroke="#FFFFFF" stroke-width="24" opacity="0.72"/>
+    <rect x="742" y="522" width="564" height="452" rx="150" fill="url(#appInner)" stroke="#1E3437" stroke-width="38"/>
+    <path d="M800 607C858 536 982 504 1093 531C1144 543 1190 566 1227 600" stroke="#37C8B8" stroke-width="42" stroke-linecap="round"/>
+    <circle cx="1024" cy="748" r="112" fill="url(#tealPulse)"/>
+    <circle cx="1068" cy="704" r="30" fill="#F6FFFE"/>
+    <path d="M836 924C882 997 992 1027 1101 1004C1156 992 1206 968 1248 932" stroke="#1E3437" stroke-width="30" stroke-linecap="round" opacity="0.18"/>
+  </g>
+
+  <text x="838" y="1280" class="label">App Icon Concept</text>
+  <text x="718" y="1322" class="note">Large icon can carry depth; tiny variants keep the same rounded window + dot silhouette.</text>
+
+  <g transform="translate(160 1460)">
+    <g filter="url(#tinyShadow)"><use href="#state-normal" width="160" height="160"/></g>
+    <text x="80" y="214" text-anchor="middle" class="mono">Normal</text>
+  </g>
+  <g transform="translate(420 1460)">
+    <g filter="url(#tinyShadow)"><use href="#state-scanning" width="160" height="160"/></g>
+    <text x="80" y="214" text-anchor="middle" class="mono">Scanning</text>
+  </g>
+  <g transform="translate(680 1460)">
+    <g filter="url(#tinyShadow)"><use href="#state-minor" width="160" height="160"/></g>
+    <text x="80" y="214" text-anchor="middle" class="mono">Minor</text>
+  </g>
+  <g transform="translate(940 1460)">
+    <g filter="url(#tinyShadow)"><use href="#state-warning" width="160" height="160"/></g>
+    <text x="80" y="214" text-anchor="middle" class="mono">Warning</text>
+  </g>
+  <g transform="translate(1200 1460)">
+    <g filter="url(#tinyShadow)"><use href="#state-critical" width="160" height="160"/></g>
+    <text x="80" y="214" text-anchor="middle" class="mono">Critical</text>
+  </g>
+  <g transform="translate(1460 1460)">
+    <g filter="url(#tinyShadow)"><use href="#state-paused" width="160" height="160"/></g>
+    <text x="80" y="214" text-anchor="middle" class="mono">Paused</text>
+  </g>
+  <g transform="translate(1720 1460)">
+    <g filter="url(#tinyShadow)"><use href="#state-offline" width="160" height="160"/></g>
+    <text x="80" y="214" text-anchor="middle" class="mono">Offline</text>
+  </g>
+
+  <g transform="translate(144 360)">
+    <text x="0" y="0" class="label">Menu Bar Glyphs</text>
+    <text x="0" y="42" class="note">Shape changes still work in monochrome.</text>
+    <g transform="translate(0 96)" style="color:#203235">
+      <rect x="-18" y="-18" width="100" height="100" rx="28" fill="#FFFFFF"/>
+      <use href="#menubar-normal" width="64" height="64"/>
+    </g>
+    <g transform="translate(126 96)" style="color:#203235">
+      <rect x="-18" y="-18" width="100" height="100" rx="28" fill="#FFFFFF"/>
+      <use href="#menubar-scanning" width="64" height="64"/>
+    </g>
+    <g transform="translate(252 96)" style="color:#203235">
+      <rect x="-18" y="-18" width="100" height="100" rx="28" fill="#FFFFFF"/>
+      <use href="#menubar-warning" width="64" height="64"/>
+    </g>
+    <g transform="translate(378 96)" style="color:#203235">
+      <rect x="-18" y="-18" width="100" height="100" rx="28" fill="#FFFFFF"/>
+      <use href="#menubar-paused" width="64" height="64"/>
+    </g>
+    <g transform="translate(504 96)" style="color:#203235">
+      <rect x="-18" y="-18" width="100" height="100" rx="28" fill="#FFFFFF"/>
+      <use href="#menubar-offline" width="64" height="64"/>
+    </g>
+  </g>
+
+  <g transform="translate(1480 360)">
+    <text x="0" y="0" class="label">Design Rules</text>
+    <text x="0" y="46" class="note">1. Same outer shape in every state</text>
+    <text x="0" y="86" class="note">2. Color plus shape for accessibility</text>
+    <text x="0" y="126" class="note">3. No realistic eye or camera mood</text>
+    <text x="0" y="166" class="note">4. Menu bar uses single-color glyphs</text>
+  </g>
+</svg>

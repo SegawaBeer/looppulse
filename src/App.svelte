@@ -40,6 +40,7 @@
     children: ChildProcessInfo[];
     subagents: SubAgentInfo[];
     memory: MemoryInfo;
+    permission_observations: PermissionObservation[];
     risk_level: string;
     risks: SessionRisk[];
     capabilities: SessionCapabilities;
@@ -79,6 +80,16 @@
   interface MemoryInfo {
     file_count: number;
     line_count: number;
+  }
+
+  interface PermissionObservation {
+    key: string;
+    label: string;
+    level: string;
+    scope: string;
+    evidence: string;
+    source: string;
+    last_seen_at: number | null;
   }
 
   interface OrphanPortInfo {
@@ -202,6 +213,11 @@
     severity: string;
     title: string;
     message: string;
+    evidence: string;
+    action: string;
+    source: string;
+    confidence: string;
+    raw_code: string | null;
     is_pro: boolean;
   }
 
@@ -281,12 +297,6 @@
     hint: string;
   }
 
-  interface PanelHeatmapCell {
-    tone: "ok" | "work" | "warning" | "critical" | "info" | "idle";
-    opacity: number;
-    title: string;
-  }
-
   interface PanelMetricItem {
     label: string;
     value: string;
@@ -294,13 +304,23 @@
     tone: "ok" | "work" | "warning" | "critical" | "info";
   }
 
+  interface PanelSignalCell {
+    key: string;
+    active: boolean;
+    color: string;
+    tone: "ok" | "work" | "warning" | "critical" | "idle";
+    label: string;
+    delay: number;
+  }
+
   const agentOptions = ["Claude Code", "Codex", "OpenCode"];
+  const overviewSignalCellCount = 30;
   const remoteFieldOptions: RemoteFieldOption[] = [
     { key: "identity", label: "身份", free: true },
     { key: "status", label: "状态", free: true },
     { key: "risk", label: "风险", free: true },
-    { key: "tokens", label: "Token", free: true },
-    { key: "context", label: "Context", free: true },
+    { key: "tokens", label: "用量", free: true },
+    { key: "context", label: "上下文", free: true },
     { key: "path", label: "路径", free: true },
     { key: "environment", label: "环境", free: false },
     { key: "timeline", label: "时间线", free: false }
@@ -698,6 +718,7 @@
       children: session.children ?? [],
       subagents: session.subagents ?? [],
       memory: session.memory ?? { file_count: 0, line_count: 0 },
+      permission_observations: session.permission_observations ?? [],
       risks: session.risks ?? [],
       capabilities: {
         tokens: false,
@@ -1022,7 +1043,7 @@
               "risk_started",
               eventSeverityFromRisk(risk),
               risk.title,
-              risk.message,
+              riskBody(risk),
               now
             ));
           }
@@ -1034,7 +1055,7 @@
               session,
               "risk_resolved",
               "ok",
-              "风险恢复",
+              "告警恢复",
               `${risk.title} 已不再触发。`,
               now
             ));
@@ -1102,6 +1123,12 @@
     return "ok";
   }
 
+  function riskBody(risk: SessionRisk): string {
+    return [risk.message, risk.evidence, risk.action ? `建议：${risk.action}` : ""]
+      .filter(Boolean)
+      .join(" ");
+  }
+
   function alertEventsForSession(session: AgentSession): AlertEvent[] {
     const previous = previousSessionState.get(session.session_id);
     const events: AlertEvent[] = [];
@@ -1117,7 +1144,7 @@
       events.push({
         key: `${session.session_id}:${risk.kind}`,
         title: `${session.project_name || session.agent_type} · ${risk.title}`,
-        body: risk.message,
+        body: riskBody(risk),
         severity: risk.severity,
         sessionId: session.session_id
       });
@@ -1175,7 +1202,7 @@
   }
 
   function setTokenThreshold(value: number) {
-    if (!requirePro("Token 阈值细调")) return;
+    if (!requirePro("累计用量阈值细调")) return;
     settings.tokenWarningThreshold = value;
     void saveSettings();
   }
@@ -1419,13 +1446,32 @@
   }
 
   function childPortSummary(child: ChildProcessInfo): string {
-    if (!child.ports?.length) return "no ports";
+    if (!child.ports?.length) return "无端口";
     return child.ports.map((port) => `:${port.port}`).join(" ");
   }
 
   function commandLabel(command: string): string {
     const first = command.split(/\s+/)[0] || command;
-    return first.split("/").filter(Boolean).pop() || command || "process";
+    return first.split("/").filter(Boolean).pop() || command || "进程";
+  }
+
+  function displayToolName(name: string | null | undefined): string {
+    const raw = (name || "").replace(/^MCP\s+/, "").trim();
+    const lower = raw.toLowerCase();
+    if (!raw) return "工具调用";
+    if (lower.includes("write_stdin") || lower.includes("stdin")) return "向终端输入内容";
+    if (lower.includes("read_thread_terminal") || lower.includes("terminal_output")) return "读取终端输出";
+    if (lower.includes("exec") || lower.includes("bash") || lower.includes("shell") || lower.includes("terminal") || lower.includes("command")) {
+      return "执行终端命令";
+    }
+    if (lower.includes("browser") || lower.includes("chrome") || lower.includes("playwright")) return "使用浏览器工具";
+    if (lower.includes("websearch") || lower.includes("web_search")) return "搜索网页";
+    if (lower.includes("webfetch") || lower.includes("web_fetch")) return "读取网页内容";
+    if (lower.includes("screen") || lower.includes("screenshot") || lower.includes("desktop") || lower.includes("computer")) return "读取屏幕或桌面状态";
+    if (lower === "read" || lower.endsWith(".read")) return "读取文件";
+    if (lower === "write" || lower.endsWith(".write")) return "写入文件";
+    if (lower === "edit" || lower.includes("edit") || lower.includes("patch")) return "修改文件";
+    return raw;
   }
 
   function toolStatusLabel(status: string): string {
@@ -1435,6 +1481,91 @@
       case "done": return "完成";
       default: return status || "未知";
     }
+  }
+
+  function permissionLevelLabel(level: string): string {
+    switch (level) {
+      case "high": return "高权限";
+      case "medium": return "中权限";
+      case "low": return "基础权限";
+      default: return "未知权限";
+    }
+  }
+
+  function permissionLevelColor(level: string): string {
+    switch (level) {
+      case "high": return "#FFB84D";
+      case "medium": return "#4ECAFF";
+      case "low": return "#4CD4A0";
+      default: return "rgba(255,255,255,0.42)";
+    }
+  }
+
+  function topPermissions(session: AgentSession, limit = 3): PermissionObservation[] {
+    return [...(session.permission_observations ?? [])].slice(0, limit);
+  }
+
+  function permissionSummary(session: AgentSession): string {
+    const items = topPermissions(session, 2);
+    if (items.length === 0) return "未发现高权限使用";
+    return items.map((item) => item.label).join(" · ");
+  }
+
+  function highPermissionLabels(session: AgentSession, limit = 2): string[] {
+    return (session.permission_observations ?? [])
+      .filter((item) => item.level === "high")
+      .slice(0, limit)
+      .map((item) => item.label);
+  }
+
+  function permissionCompactLabel(session: AgentSession): string {
+    const count = session.permission_observations?.length ?? 0;
+    const highCount = (session.permission_observations ?? []).filter((item) => item.level === "high").length;
+    if (count === 0) return "权限 0";
+    return highCount > 0 ? `权限 ${count} · 高 ${highCount}` : `权限 ${count}`;
+  }
+
+  function agentInitial(session: AgentSession): string {
+    const lower = session.agent_type.toLowerCase();
+    if (lower.includes("claude")) return "C";
+    if (lower.includes("codex")) return "O";
+    if (lower.includes("opencode")) return "OC";
+    return (session.agent_type || "A").slice(0, 2).toUpperCase();
+  }
+
+  function agentDisplayLabel(session: AgentSession): string {
+    if (session.agent_type === "Claude Code") return "Claude";
+    if (session.agent_type === "Codex") return "Codex";
+    if (session.agent_type === "OpenCode") return "OpenCode";
+    return session.agent_type || "Agent";
+  }
+
+  function modelBadgeLabel(session: AgentSession): string {
+    const model = shortModel(session.model);
+    if (model) return model;
+    return "模型未知";
+  }
+
+  function modelInitial(session: AgentSession): string {
+    const model = (session.model || "").toLowerCase();
+    if (model.includes("sonnet")) return "S";
+    if (model.includes("opus")) return "O";
+    if (model.includes("haiku")) return "H";
+    if (model.includes("gpt")) return "G";
+    if (model.includes("kimi")) return "K";
+    if (model.includes("qwen")) return "Q";
+    if (model.includes("deepseek")) return "D";
+    if (model.includes("minimax")) return "M";
+    return "M";
+  }
+
+  function modelToneClass(session: AgentSession): string {
+    const combined = `${session.agent_type} ${session.model || ""}`.toLowerCase();
+    if (combined.includes("claude")) return "tone-claude";
+    if (combined.includes("codex") || combined.includes("gpt") || combined.includes("openai")) return "tone-openai";
+    if (combined.includes("opencode")) return "tone-opencode";
+    if (combined.includes("qwen") || combined.includes("kimi") || combined.includes("deepseek") || combined.includes("minimax")) return "tone-cn";
+    return "tone-generic";
   }
 
   function toolErrorLabel(kind: string | null | undefined): string {
@@ -1492,7 +1623,7 @@
     switch (kind) {
       case "session_seen": return "会话";
       case "status_changed": return "状态";
-      case "risk_started": return "风险";
+      case "risk_started": return "告警";
       case "risk_resolved": return "恢复";
       case "completed": return "完成";
       default: return "事件";
@@ -1501,10 +1632,10 @@
 
   function riskLabel(level: string): string {
     switch (level) {
-      case "critical": return "高危";
-      case "warning": return "注意";
+      case "critical": return "需要处理";
+      case "warning": return "待确认";
       case "info": return "观察";
-      default: return "健康";
+      default: return "正常";
     }
   }
 
@@ -1547,6 +1678,34 @@
     return percentLabel(session.context_pressure_percent);
   }
 
+  function livenessLabel(session: AgentSession): string {
+    if (session.risk_level === "critical") return "异常";
+    if (session.risk_level === "warning") return "待确认";
+    if (session.status === "rate_limited") return "限流";
+    if (wasActive(session.status)) return "工作中";
+    if (["waiting", "idle"].includes(session.status)) return "待命";
+    if (["done", "finished"].includes(session.status)) return "已停下";
+    return statusLabel(session.status);
+  }
+
+  function pulseToneForSession(session: AgentSession): "ok" | "work" | "warning" | "critical" | "idle" {
+    if (session.risk_level === "critical" || ["error", "rate_limited", "stalled"].includes(session.status)) return "critical";
+    if (session.risk_level === "warning") return "warning";
+    if (wasActive(session.status)) return "work";
+    if (["waiting", "idle"].includes(session.status)) return "ok";
+    return "idle";
+  }
+
+  function pulseToneLabel(tone: ReturnType<typeof pulseToneForSession>): string {
+    switch (tone) {
+      case "critical": return "异常";
+      case "warning": return "待确认";
+      case "work": return "工作中";
+      case "ok": return "存活";
+      default: return "停下";
+    }
+  }
+
   function shortenPath(p: string): string {
     if (!p) return "";
     if (settings.pathDisplayMode === "full") return p;
@@ -1574,6 +1733,10 @@
       hour: "2-digit",
       minute: "2-digit"
     });
+  }
+
+  function lastActivityLabel(session: AgentSession): string {
+    return `最近 ${formatClock(session.last_activity_at)}`;
   }
 
   function timelineItems(): SessionEvent[] {
@@ -1607,9 +1770,22 @@
   }
 
   function conversationTitle(session: AgentSession): string {
-    return session.conversation_summary?.title
+    return safeTaskTitle(session.conversation_summary?.title)
       || safeTaskTitle(session.current_task)
       || statusLabel(session.status);
+  }
+
+  function externalPrimaryLine(session: AgentSession): string {
+    if (session.risks.length > 0) return session.risks[0].title;
+    return shortenPath(session.cwd) || "暂无告警";
+  }
+
+  function externalSecondaryLine(session: AgentSession): string {
+    return [
+      livenessLabel(session),
+      lastActivityLabel(session),
+      permissionCompactLabel(session)
+    ].filter(Boolean).join(" · ");
   }
 
   function safeTaskTitle(task: string | null | undefined): string {
@@ -1617,10 +1793,11 @@
     const trimmed = task.trim();
     if (!trimmed) return "";
     if (trimmed.startsWith("调用 ")) {
-      return trimmed.split(/\s+/).slice(0, 2).join(" ");
+      const parts = trimmed.split(/\s+/);
+      return displayToolName(parts[1]);
     }
     if (trimmed.startsWith("MCP ")) {
-      return trimmed.split(/\s+/).slice(0, 2).join(" ");
+      return displayToolName(trimmed);
     }
     if (trimmed.length > 42) return `${trimmed.slice(0, 39)}...`;
     return trimmed;
@@ -1651,8 +1828,6 @@
     const summary = session.conversation_summary;
     const parts = [
       conversationPhaseLabel(summary.phase),
-      summary.turn_count > 0 ? `${summary.turn_count} turns` : "",
-      summary.tool_turn_count > 0 ? `${summary.tool_turn_count} tools` : "",
       summary.last_signal_at ? `${formatRelative(summary.last_signal_at)}前` : ""
     ].filter(Boolean);
     return parts.join(" · ") || "低敏摘要待采集";
@@ -1671,17 +1846,17 @@
 
   function capabilityLabel(key: keyof SessionCapabilities): string {
     switch (key) {
-      case "tokens": return "Token";
-      case "context": return "Context";
+      case "tokens": return "用量";
+      case "context": return "上下文";
       case "current_task": return "任务";
       case "conversation_summary": return "摘要";
       case "rate_limit": return "限流";
-      case "tool_timeline": return "Timeline";
+      case "tool_timeline": return "过程";
       case "file_audit": return "文件";
       case "ports": return "端口";
       case "process_tree": return "进程";
       case "subagents": return "子Agent";
-      case "memory": return "Memory";
+      case "memory": return "工程规模";
       case "mcp": return "MCP";
       default: return key;
     }
@@ -1708,31 +1883,36 @@
   function diagnosticSummary(session: AgentSession): string {
     const summary = conversationSummaryLines(session);
     const risks = session.risks.length
-      ? session.risks.map((risk) => `- [${risk.severity}] ${risk.title}: ${risk.message}`).join("\n")
-      : "- 暂未发现风险";
+      ? session.risks.map((risk) => [
+          `- [${risk.severity}] ${risk.title}: ${risk.message}`,
+          risk.evidence ? `  证据：${risk.evidence}` : "",
+          risk.action ? `  建议：${risk.action}` : "",
+          risk.source ? `  来源：${risk.source}${risk.raw_code ? ` / ${risk.raw_code}` : ""}` : ""
+        ].filter(Boolean).join("\n")).join("\n")
+      : "- 暂未发现需要处理的告警";
     return [
       "观察者诊断摘要",
       `Agent: ${session.agent_type}`,
-      `Project: ${sessionTitle(session)}`,
-      `Status: ${statusLabel(session.status)} (${session.status})`,
-      `Model: ${session.model || "unknown"}`,
-      `Path: ${shortenPath(session.cwd)}`,
-      `Last activity: ${formatRelative(session.last_activity_at)} ago`,
-      `Runtime: ${formatDuration(session.started_at)}`,
-      `Context: ${contextLabel(session)}`,
-      `Context pressure: ${pressureLabel(session)}`,
-      `Tokens: ${formatTokens(totalTokens(session)) || "0"}`,
-      `Conversation: ${summary.join(" · ") || "metadata unavailable"}`,
-      `Tool calls: ${(session.tool_calls ?? []).length}`,
-      `Tool errors: ${(session.tool_calls ?? []).filter((tool) => tool.status === "error").map((tool) => [tool.name, toolErrorLabel(tool.error_kind)].filter(Boolean).join(":")).filter(Boolean).join(", ") || "none"}`,
-      `File accesses: ${(session.file_accesses ?? []).length}`,
-      `Child processes: ${(session.children ?? []).length}`,
-      `Subagents: ${(session.subagents ?? []).length}`,
-      `Memory: ${session.memory?.file_count ?? 0} files / ${session.memory?.line_count ?? 0} lines`,
-      `Compactions: ${session.compaction_count ?? 0}`,
-      `Git: ${session.git ? gitSummary(session.git) : "unknown"}`,
-      `Ports: ${session.ports?.length ? session.ports.map((port) => port.port).join(", ") : "none"}`,
-      "Risks:",
+      `项目：${sessionTitle(session)}`,
+      `状态：${statusLabel(session.status)} (${session.status})`,
+      `模型：${session.model || "未知"}`,
+      `路径：${shortenPath(session.cwd)}`,
+      `最近活动：${formatRelative(session.last_activity_at)}前`,
+      `运行时长：${formatDuration(session.started_at)}`,
+      `上下文：${contextLabel(session)} (${session.context_is_estimated ? "估算" : "当前"})`,
+      `权限观察：${(session.permission_observations ?? []).map((item) => `${item.label}/${permissionLevelLabel(item.level)}`).join(", ") || "未发现"}`,
+      `累计用量：${formatTokens(totalTokens(session)) || "0"}`,
+      `会话摘要：${summary.join(" · ") || "暂无低敏摘要"}`,
+      `过程调用：${(session.tool_calls ?? []).length}`,
+      `调用错误：${(session.tool_calls ?? []).filter((tool) => tool.status === "error").map((tool) => [displayToolName(tool.name), toolErrorLabel(tool.error_kind)].filter(Boolean).join(":")).filter(Boolean).join(", ") || "未发现"}`,
+      `文件访问：${(session.file_accesses ?? []).length}`,
+      `关联子进程：${(session.children ?? []).length}`,
+      `子 Agent：${(session.subagents ?? []).length}`,
+      `工程规模：${session.memory?.file_count ?? 0} 文件 / ${session.memory?.line_count ?? 0} 行`,
+      `上下文压缩：${session.compaction_count ?? 0}`,
+      `Git：${session.git ? gitSummary(session.git) : "未识别"}`,
+      `端口：${session.ports?.length ? session.ports.map((port) => port.port).join(", ") : "未发现"}`,
+      "告警：",
       risks
     ].join("\n");
   }
@@ -1821,6 +2001,15 @@
         startedAt: session.started_at,
         lastActivityAt: session.last_activity_at
       };
+      item.permissions = session.permission_observations.map((permission) => ({
+        key: permission.key,
+        label: permission.label,
+        level: permission.level,
+        scope: permission.scope,
+        evidence: permission.evidence,
+        source: permission.source,
+        lastSeenAt: permission.last_seen_at
+      }));
     }
     if (fields.has("risk")) {
       item.risk = {
@@ -1830,6 +2019,11 @@
           kind: risk.kind,
           severity: risk.severity,
           title: risk.title,
+          evidence: risk.evidence,
+          action: risk.action,
+          source: risk.source,
+          confidence: risk.confidence,
+          rawCode: risk.raw_code,
           isPro: risk.is_pro
         }))
       };
@@ -1893,7 +2087,7 @@
   }
 
   function gitSummary(git: GitInfo): string {
-    const dirty = git.is_dirty ? `${git.changed_files} changed` : "clean";
+    const dirty = git.is_dirty ? `${git.changed_files} 个改动` : "干净";
     const sync = [
       git.ahead > 0 ? `+${git.ahead}` : "",
       git.behind > 0 ? `-${git.behind}` : ""
@@ -1913,7 +2107,7 @@
     const seven = limit.seven_day_percent === null || limit.seven_day_percent === undefined
       ? "—"
       : `${Math.round(limit.seven_day_percent)}%`;
-    return `${limit.source} · 5h ${five} · 7d ${seven}`;
+    return `${limit.source} · 5小时 ${five} · 7天 ${seven}`;
   }
 
   function topRateLimit(): RateLimitInfo | null {
@@ -1926,7 +2120,7 @@
     if (!monitorSnapshot.mcp_servers.length) return "未发现";
     const active = monitorSnapshot.mcp_servers.reduce((sum, server) => sum + server.active_rollouts, 0);
     const total = monitorSnapshot.mcp_servers.reduce((sum, server) => sum + server.total_rollouts, 0);
-    return `${monitorSnapshot.mcp_servers.length} servers · ${active}/${total} active`;
+    return `${monitorSnapshot.mcp_servers.length} 个服务 · ${active}/${total} 活跃`;
   }
 
   function quotaOrMcpSummary(): string {
@@ -2118,100 +2312,62 @@
   let dashboardSessions = $derived(filteredDashboardSessions());
   let dashboardProjects = $derived(projectSummaryItems());
   let dashboardRisks = $derived(topRiskItems());
+  let primaryAlert = $derived(dashboardRisks[0] ?? null);
 
   function overallStatus(): { label: string; color: string } {
-    if (totalCount === 0) return { label: "空闲", color: "rgba(255,255,255,0.35)" };
-    if (criticalCount > 0) return { label: "告警", color: "#FF5C7A" };
-    if (warningCount > 0) return { label: "观察", color: "#FFB84D" };
-    if (activeCount > 0) return { label: "活跃", color: "#FF9A3C" };
-    return { label: "等待中", color: "#4CD4A0" };
+    if (totalCount === 0) return { label: "未发现会话", color: "rgba(255,255,255,0.35)" };
+    if (criticalCount > 0) return { label: "需要处理", color: "#FF5C7A" };
+    if (warningCount > 0) return { label: "待确认", color: "#FFB84D" };
+    if (activeCount > 0) return { label: "工作中", color: "#FF9A3C" };
+    return { label: "待命", color: "#4CD4A0" };
   }
 
-  function healthPillLabel(): string {
-    if (criticalCount > 0) return `${criticalCount} 高危`;
-    if (warningOnlyCount > 0) return `${warningOnlyCount} 注意`;
-    return "健康";
-  }
-
-  function healthScore(): number {
-    if (totalCount === 0) return 100;
-    const orphanPenalty = Math.min(16, monitorSnapshot.orphan_ports.length * 4);
-    const conflictPenalty = Math.min(16, monitorSnapshot.port_conflicts.length * 8);
-    const quotaPenalty = monitorSnapshot.rate_limits.some((limit) =>
-      (limit.five_hour_percent ?? 0) >= 90 || (limit.seven_day_percent ?? 0) >= 90
-    ) ? 12 : 0;
-    const score = 100
-      - criticalCount * 26
-      - warningOnlyCount * 12
-      - orphanPenalty
-      - conflictPenalty
-      - quotaPenalty;
-    return Math.max(8, Math.min(100, score));
-  }
-
-  function healthScoreLabel(): string {
-    const score = healthScore();
-    if (score >= 92) return "状态稳定";
-    if (score >= 76) return "保持观察";
-    if (score >= 52) return "需要关注";
-    return "建议介入";
+  function alertPillLabel(): string {
+    if (criticalCount > 0) return `${criticalCount} 个待处理`;
+    if (warningOnlyCount > 0) return `${warningOnlyCount} 个待确认`;
+    return "无告警";
   }
 
   function overviewSignalLine(): string {
     if (totalCount === 0) return "等待会话";
-    if (criticalCount > 0) return `${criticalCount} 个高危信号`;
-    if (warningOnlyCount > 0) return `${warningOnlyCount} 个注意信号`;
+    if (criticalCount > 0) return `${criticalCount} 个问题需要处理`;
+    if (warningOnlyCount > 0) return `${warningOnlyCount} 个信号需要确认`;
     if (activeCount > 0) return `${activeCount} 个 Agent 工作中`;
     return "所有会话待命";
   }
 
-  function heatToneForSession(session: AgentSession): PanelHeatmapCell["tone"] {
-    if (session.risk_level === "critical") return "critical";
-    if (session.risk_level === "warning") return "warning";
-    if (session.risk_level === "info") return "info";
-    if (wasActive(session.status)) return "work";
-    if (["waiting", "idle"].includes(session.status)) return "ok";
-    return "idle";
+  function signalSessions(): AgentSession[] {
+    return sessions
+      .filter((session) => session.pid !== null || !["done", "finished"].includes(session.status))
+      .slice(0, overviewSignalCellCount);
   }
 
-  function heatToneForEvent(event: SessionEvent): PanelHeatmapCell["tone"] {
-    if (event.severity === "critical") return "critical";
-    if (event.severity === "warning") return "warning";
-    if (event.severity === "info") return "info";
-    if (event.kind === "completed") return "ok";
-    return "idle";
+  function signalSessionCount(): number {
+    return signalSessions().length;
   }
 
-  function panelHeatmapCells(): PanelHeatmapCell[] {
-    const eventCells = eventHistory.slice(0, 30).reverse().map((event, index) => ({
-      tone: heatToneForEvent(event),
-      opacity: Math.min(1, 0.42 + index / 44),
-      title: `${event.projectName} · ${event.title}`
-    }));
-    if (eventCells.length > 0) {
-      const padding = Array.from({ length: Math.max(0, 30 - eventCells.length) }, () => ({
-        tone: "idle" as const,
-        opacity: 0.22,
-        title: "暂无历史信号"
-      }));
-      return [...padding, ...eventCells].slice(-30);
-    }
+  function overviewSignalCells(): PanelSignalCell[] {
+    const liveSessions = signalSessions();
+    return Array.from({ length: overviewSignalCellCount }, (_, index) => {
+      const session = liveSessions[index];
+      if (!session) {
+        return {
+          key: `empty-signal-${index}`,
+          active: false,
+          color: "rgba(255,255,255,0.08)",
+          tone: "idle",
+          label: "等待 Agent 会话",
+          delay: index * 70
+        };
+      }
 
-    if (sessions.length === 0) {
-      return Array.from({ length: 30 }, () => ({
-        tone: "idle" as const,
-        opacity: 0.22,
-        title: "等待 Agent 会话"
-      }));
-    }
-
-    return Array.from({ length: 30 }, (_, index) => {
-      const session = sessions[index % sessions.length];
-      const tone = heatToneForSession(session);
       return {
-        tone,
-        opacity: Math.min(1, 0.34 + ((index % 10) / 18)),
-        title: `${sessionTitle(session)} · ${riskLabel(session.risk_level)} · ${statusLabel(session.status)}`
+        key: `${sessionKey(session, index)}:signal`,
+        active: true,
+        color: statusColor(session.status),
+        tone: pulseToneForSession(session),
+        label: `${sessionTitle(session)} · ${livenessLabel(session)}`,
+        delay: index * 70
       };
     });
   }
@@ -2219,22 +2375,22 @@
   function panelMetricItems(): PanelMetricItem[] {
     return [
       {
+        label: "存活会话",
+        value: `${totalCount}`,
+        hint: `${sessions.filter((session) => session.pid !== null).length} 个进程可关联`,
+        tone: totalCount > 0 ? "ok" : "info"
+      },
+      {
         label: "工作中",
         value: `${activeCount}`,
-        hint: `${totalCount} sessions`,
+        hint: activeCount > 0 ? "正在产生运行信号" : "暂无执行中任务",
         tone: activeCount > 0 ? "work" : "ok"
       },
       {
-        label: "风险",
+        label: "待处理",
         value: `${criticalCount + warningOnlyCount}`,
-        hint: criticalCount > 0 ? `${criticalCount} critical` : `${warningOnlyCount} warning`,
+        hint: criticalCount > 0 ? `${criticalCount} 个需要立即看` : `${warningOnlyCount} 个待确认`,
         tone: criticalCount > 0 ? "critical" : warningOnlyCount > 0 ? "warning" : "ok"
-      },
-      {
-        label: "Token",
-        value: formatTokens(totalTokenCount) || "0",
-        hint: quotaOrMcpSummary(),
-        tone: "info"
       }
     ];
   }
@@ -2271,7 +2427,7 @@
       <div class="dash-status-card">
         <span>整体状态</span>
         <strong style="color:{overallStatus().color}">{overallStatus().label}</strong>
-        <p>{totalCount} 会话 · {activeCount} 活跃 · {warningCount} 风险</p>
+        <p>{totalCount} 会话 · {activeCount} 工作中 · {warningCount} 待处理/确认</p>
       </div>
 
       <nav class="dash-filter-list" aria-label="会话筛选">
@@ -2284,7 +2440,7 @@
           <em>{activeCount}</em>
         </button>
         <button class:active={dashboardFilter === "risk"} onclick={() => dashboardFilter = "risk"}>
-          <span>风险会话</span>
+          <span>待处理会话</span>
           <em>{warningCount}</em>
         </button>
         <button class:active={dashboardFilter === "pro"} onclick={() => dashboardFilter = "pro"}>
@@ -2299,7 +2455,7 @@
           {#each dashboardProjects as project}
             <div class="project-row">
               <strong>{project.name}</strong>
-              <span>{project.total} 会话 · {project.active} 活跃 · {formatTokens(project.tokens) || "0"}</span>
+              <span>{project.total} 会话 · {project.active} 工作中 · {project.risks} 待处理</span>
               <i style="width:{Math.min(100, Math.max(8, project.risks * 30 + project.active * 12))}%"></i>
             </div>
           {/each}
@@ -2313,13 +2469,13 @@
       <header class="dashboard-header">
         <div>
           <h1>完整视图</h1>
-          <p>实时查看 Agent 会话、风险、上下文压力与工程环境信号</p>
+          <p>实时查看 Agent 存活、工作状态、告警证据与工程环境信号</p>
         </div>
         <div class="dashboard-actions">
           <div class="dash-sort">
             <button class:active={dashboardSort === "risk"} onclick={() => dashboardSort = "risk"}>风险</button>
             <button class:active={dashboardSort === "activity"} onclick={() => dashboardSort = "activity"}>最近</button>
-            <button class:active={dashboardSort === "tokens"} onclick={() => dashboardSort = "tokens"}>Token</button>
+            <button class:active={dashboardSort === "tokens"} onclick={() => dashboardSort = "tokens"}>用量</button>
           </div>
           <button class="dash-refresh" onclick={refreshSessions}>刷新</button>
         </div>
@@ -2327,22 +2483,22 @@
 
       <section class="dash-kpi-grid">
         <div class="dash-kpi">
-          <span>活跃会话</span>
+          <span>工作中会话</span>
           <strong>{activeCount}</strong>
-          <em>{totalCount} total</em>
+          <em>共 {totalCount} 个会话</em>
         </div>
         <div class="dash-kpi">
-          <span>风险</span>
+          <span>待处理</span>
           <strong style="color:{warningCount ? '#FFB84D' : '#4CD4A0'}">{warningCount}</strong>
-          <em>{sessions.filter((s) => s.risk_level === "critical").length} critical</em>
+          <em>{sessions.filter((s) => s.risk_level === "critical").length} 个需要立即看</em>
         </div>
         <div class="dash-kpi">
-          <span>Token</span>
-          <strong>{formatTokens(totalTokenCount) || "0"}</strong>
-          <em>累计消耗</em>
+          <span>高权限观察</span>
+          <strong>{sessions.reduce((sum, session) => sum + (session.permission_observations ?? []).filter((item) => item.level === "high").length, 0)}</strong>
+          <em>终端/工程外/屏幕等</em>
         </div>
         <div class="dash-kpi">
-          <span>MCP / Quota</span>
+          <span>MCP / 限额</span>
           <strong>{monitorSnapshot.mcp_servers.length}</strong>
           <em>{quotaOrMcpSummary()}</em>
         </div>
@@ -2353,33 +2509,31 @@
           <div class="table-head">
             <span>会话</span>
             <span>状态</span>
-            <span>Context</span>
-            <span>Token</span>
+            <span>权限观察</span>
+            <span>累计用量</span>
             <span>环境</span>
-            <span>风险</span>
+            <span>告警</span>
           </div>
           {#if dashboardSessions.length > 0}
             {#each dashboardSessions as session, index (sessionKey(session, index))}
               <button type="button" class={`session-row risk-${session.risk_level || "ok"}${selectedSessionId === session.session_id ? " active" : ""}`} onclick={() => selectSession(session)}>
                 <div class="session-cell-main">
                   <strong>{sessionTitle(session)}</strong>
-                  <span>{conversationTitle(session)} · {conversationSummaryLine(session)}</span>
+                  <span>{agentDisplayLabel(session)} · {modelBadgeLabel(session)}</span>
                 </div>
                 <div class="session-cell-status">
                   <i style="background:{statusColor(session.status)}"></i>
                   <span>{statusLabel(session.status)}</span>
-                  <em>{formatRelative(session.last_activity_at)}前</em>
+                  <em>{lastActivityLabel(session)}</em>
                 </div>
                 <div class="session-cell-meter">
-                  <strong>{contextMeterLabel(session) === "压力" ? pressureLabel(session) : contextLabel(session)}</strong>
-                  <div class="meter">
-                    <i style="width:{percentWidth(contextMeterValue(session))}; background:{riskColor(session.risk_level)}"></i>
-                  </div>
+                  <strong>{session.permission_observations?.length ?? 0} 项</strong>
+                  <em>{permissionSummary(session)}</em>
                 </div>
                 <div class="session-cell-token">{formatTokens(totalTokens(session)) || "0"}</div>
                 <div class="session-cell-env">
-                  <span>{session.git ? session.git.branch : "no git"}</span>
-                  <em>{session.children?.length ?? 0} proc · {session.ports?.length ?? 0} ports</em>
+                  <span>{session.git ? session.git.branch : "未识别 Git"}</span>
+                  <em>{session.children?.length ?? 0} 个进程 · {session.ports?.length ?? 0} 个端口</em>
                 </div>
                 <div class="session-cell-risk" style="color:{riskColor(session.risk_level)}">
                   {session.risks[0]?.title || riskLabel(session.risk_level)}
@@ -2403,13 +2557,13 @@
             </div>
             {#if inspectorMode === "detail"}
               <div class={`inspector-health risk-${selectedSession.risk_level || "ok"}`}>
-                <span>健康状态</span>
+                <span>运行状态</span>
                 <strong style="color:{riskColor(selectedSession.risk_level)}">{riskLabel(selectedSession.risk_level)}</strong>
                 <em>{statusLabel(selectedSession.status)} · 最近 {formatRelative(selectedSession.last_activity_at)}前</em>
               </div>
               <div class="inspector-grid">
-                <div><span>Context</span><strong>{contextLabel(selectedSession)}</strong><em>压力 {pressureLabel(selectedSession)}</em></div>
-                <div><span>Token</span><strong>{formatTokens(totalTokens(selectedSession)) || "0"}</strong><em>in {formatTokens(selectedSession.input_tokens) || "0"}</em></div>
+                <div><span>上下文</span><strong>{contextLabel(selectedSession)}</strong><em>{selectedSession.context_is_estimated ? "估算值" : "当前窗口"}</em></div>
+                <div><span>累计用量</span><strong>{formatTokens(totalTokens(selectedSession)) || "0"}</strong><em>输入 {formatTokens(selectedSession.input_tokens) || "0"}</em></div>
                 <div><span>运行</span><strong>{formatDuration(selectedSession.started_at)}</strong><em>PID {selectedSession.pid ?? "—"}</em></div>
                 <div><span>端口</span><strong>{selectedSession.ports?.length ?? 0}</strong><em>{portsSummary(selectedSession.ports)}</em></div>
               </div>
@@ -2430,9 +2584,9 @@
                     <em>{topChildProcesses(selectedSession, 1)[0]?.command ? commandLabel(topChildProcesses(selectedSession, 1)[0].command) : "—"}</em>
                   </div>
                   <div>
-                    <span>Memory</span>
+                    <span>工程规模</span>
                     <strong>{selectedSession.memory?.file_count ?? 0}</strong>
-                    <em>{selectedSession.memory?.line_count ?? 0} lines</em>
+                    <em>{selectedSession.memory?.line_count ?? 0} 行</em>
                   </div>
                   <div>
                     <span>子Agent</span>
@@ -2442,7 +2596,7 @@
                   <div>
                     <span>端口冲突</span>
                     <strong>{monitorSnapshot.port_conflicts.filter((conflict) => conflict.owners.some((owner) => owner.session_id === selectedSession.session_id)).length}</strong>
-                    <em>{monitorSnapshot.orphan_ports.length} orphan</em>
+                    <em>{monitorSnapshot.orphan_ports.length} 个残留端口</em>
                   </div>
                 </div>
                 <div class="mini-timeline-list">
@@ -2473,16 +2627,22 @@
                 {/if}
               </div>
               <div class="inspector-section">
-                <div class="dash-section-title">风险原因</div>
+                <div class="dash-section-title">告警原因</div>
                 {#if selectedSession.risks.length > 0}
                   {#each selectedSession.risks as risk}
                     <div class="inspector-risk">
                       <strong>{risk.title}{risk.is_pro ? " · Pro" : ""}</strong>
                       <p>{risk.message}</p>
+                      {#if risk.evidence}
+                        <em>证据：{risk.evidence}</em>
+                      {/if}
+                      {#if risk.action}
+                        <em>建议：{risk.action}</em>
+                      {/if}
                     </div>
                   {/each}
                 {:else}
-                  <div class="dash-empty-mini">当前没有风险</div>
+                  <div class="dash-empty-mini">当前没有需要处理的告警</div>
                 {/if}
               </div>
               <div class="inspector-section">
@@ -2491,7 +2651,7 @@
                   <div>
                     <span>工具</span>
                     <strong>{selectedSession.tool_calls?.length ?? 0}</strong>
-                    <em>最近 {recentToolCalls(selectedSession, 1)[0]?.name ?? "—"}</em>
+                    <em>最近 {displayToolName(recentToolCalls(selectedSession, 1)[0]?.name) || "—"}</em>
                   </div>
                   <div>
                     <span>文件</span>
@@ -2501,7 +2661,7 @@
                   <div>
                     <span>Turn 峰值</span>
                     <strong>{historyPeak(selectedSession.token_history)}</strong>
-                    <em>{selectedSession.token_history?.length ?? 0} turns</em>
+                    <em>{selectedSession.token_history?.length ?? 0} 次采样</em>
                   </div>
                   <div>
                     <span>压缩</span>
@@ -2513,7 +2673,7 @@
                   {#each recentToolCalls(selectedSession, 4) as tool}
                     <div class={`tool-mini status-${tool.status}`}>
                       <span>{toolStatusLabel(tool.status)}</span>
-                      <strong>{tool.name}</strong>
+                      <strong>{displayToolName(tool.name)}</strong>
                       <em>{toolErrorLabel(tool.error_kind) || tool.arg || toolDuration(tool.duration_ms)}</em>
                     </div>
                   {:else}
@@ -2556,7 +2716,7 @@
             </div>
             <div class="inspector-tabs">
               <button class:active={inspectorMode === "timeline"} onclick={() => inspectorMode = "timeline"}>时间线</button>
-              <button class:active={inspectorMode === "detail"} onclick={() => inspectorMode = "detail"}>风险</button>
+              <button class:active={inspectorMode === "detail"} onclick={() => inspectorMode = "detail"}>告警</button>
             </div>
             {#if inspectorMode === "detail"}
               {#if dashboardRisks.length > 0}
@@ -2564,7 +2724,10 @@
                   <button class="risk-feed-item" onclick={() => selectSession(item.session)}>
                     <span style="color:{riskColor(item.risk.severity)}">{riskLabel(item.risk.severity)}</span>
                     <strong>{item.session.project_name} · {item.risk.title}</strong>
-                    <p>{item.risk.message}</p>
+                    <p>{item.risk.evidence || item.risk.message}</p>
+                    {#if item.risk.action}
+                      <em>{item.risk.action}</em>
+                    {/if}
                   </button>
                 {/each}
               {:else}
@@ -2573,19 +2736,19 @@
                     <div class="system-signal-item">
                       <span>MCP · PID {server.pid}</span>
                       <strong>{server.profile || server.parent_agent}</strong>
-                      <p>{server.active_rollouts}/{server.total_rollouts} active · {server.latest_activity_at ? `${formatRelative(server.latest_activity_at)}前` : "no rollout"}</p>
+                      <p>{server.active_rollouts}/{server.total_rollouts} 活跃 · {server.latest_activity_at ? `${formatRelative(server.latest_activity_at)}前` : "暂无活动"}</p>
                     </div>
                   {/each}
                   {#each monitorSnapshot.rate_limits.slice(0, 3) as limit}
                     <div class="system-signal-item">
-                      <span>Quota</span>
+                      <span>限额</span>
                       <strong>{rateLimitLabel(limit)}</strong>
                       <p>{limit.updated_at ? `${formatRelative(limit.updated_at)}前更新` : "等待下一次限额信号"}</p>
                     </div>
                   {/each}
                   {#each monitorSnapshot.orphan_ports.slice(0, 5) as port}
                     <div class="system-signal-item">
-                      <span>Orphan · :{port.port}</span>
+                      <span>残留端口 · :{port.port}</span>
                       <strong>{port.project_name}</strong>
                       <p>PID {port.pid} · {commandLabel(port.command)}</p>
                       <button disabled={cleaningPortKey === orphanPortKey(port)} onclick={() => cleanupOrphanPort(port)}>
@@ -2594,7 +2757,7 @@
                     </div>
                   {/each}
                   {#if monitorSnapshot.mcp_servers.length === 0 && monitorSnapshot.rate_limits.length === 0 && monitorSnapshot.orphan_ports.length === 0}
-                    <div class="dashboard-empty">暂无风险，今天挺安静。</div>
+                    <div class="dashboard-empty">暂无告警，当前没有需要处理的事项。</div>
                   {/if}
                 </div>
               {/if}
@@ -2634,15 +2797,15 @@
       </h1>
       <p class="subtitle">
         {#if totalCount === 0}
-          本地 Agent 运行健康监控
+          本地 Agent 存活监控与报警
         {:else}
-          <span class="accent">{totalCount}</span> 会话 · <span class="accent-orange">{activeCount}</span> 活跃 · {overviewSignalLine()}
+          <span class="accent">{totalCount}</span> 会话 · <span class="accent-orange">{activeCount}</span> 工作中 · {overviewSignalLine()}
         {/if}
       </p>
     </div>
     <div class="health-stack">
       <div class="health-pill" style="color:{overallStatus().color}; border-color:{overallStatus().color}55">
-        {healthPillLabel()}
+        {alertPillLabel()}
       </div>
       {#if totalCount > 0 && !selectedSession}
         <div class="view-toggle" aria-label="列表视图">
@@ -2655,15 +2818,25 @@
 
   {#if totalCount > 0 && !selectedSession}
     <section class={`panel-overview risk-${overallStatus().label}`}>
-      <div class="overview-health-card">
-        <div class="overview-score">
-          <span>健康指数</span>
-          <strong style="color:{overallStatus().color}">{healthScore()}</strong>
-          <em>{healthScoreLabel()}</em>
+      <div class={`overview-monitor-card tone-${criticalCount > 0 ? "critical" : warningOnlyCount > 0 ? "warning" : activeCount > 0 ? "work" : "ok"}`}>
+        <div class="overview-monitor-copy">
+          <span>整体态势</span>
+          <strong style="color:{overallStatus().color}">{overallStatus().label}</strong>
+          {#if primaryAlert}
+            <em>{primaryAlert.session.project_name} · {primaryAlert.risk.title}</em>
+          {:else if activeCount > 0}
+            <em>{activeCount} 个 Agent 正在工作</em>
+          {:else}
+            <em>所有会话待命</em>
+          {/if}
         </div>
-        <div class="overview-heatmap" aria-label="最近状态热力图">
-          {#each panelHeatmapCells() as cell}
-            <i class={`tone-${cell.tone}`} style:opacity={cell.opacity} title={cell.title}></i>
+        <div class="overview-signal-grid" aria-label={`Agent 指示灯：${signalSessionCount()} 个会话`}>
+          {#each overviewSignalCells() as cell (cell.key)}
+            <span
+              class={`overview-signal-cell${cell.active ? " active" : ""} tone-${cell.tone}`}
+              style="--cell-color:{cell.color}; --cell-delay:{cell.delay}ms"
+              title={cell.label}
+            ></span>
           {/each}
         </div>
       </div>
@@ -2699,7 +2872,7 @@
 
         <div class={`detail-hero risk-${selectedSession.risk_level || "ok"}`}>
           <div>
-            <span class="detail-label">健康状态</span>
+            <span class="detail-label">运行状态</span>
             <strong style="color:{riskColor(selectedSession.risk_level)}">{riskLabel(selectedSession.risk_level)}</strong>
           </div>
           <div class="detail-clock">
@@ -2711,17 +2884,17 @@
 
         <div class="detail-grid">
           <div class="detail-stat">
-            <span>当前上下文</span>
+            <span>上下文</span>
             <strong>{contextLabel(selectedSession)}</strong>
             <div class="meter">
               <i style="width:{percentWidth(contextMeterValue(selectedSession))}; background:{riskColor(selectedSession.risk_level)}"></i>
             </div>
-            <em>累计压力 {pressureLabel(selectedSession)}</em>
+            <em>{selectedSession.context_is_estimated ? "估算采集" : "当前窗口"}</em>
           </div>
           <div class="detail-stat">
-            <span>Token</span>
+            <span>累计用量</span>
             <strong>{formatTokens(totalTokens(selectedSession)) || "0"}</strong>
-            <em>in {formatTokens(selectedSession.input_tokens) || "0"} · out {formatTokens(selectedSession.output_tokens) || "0"}</em>
+            <em>输入 {formatTokens(selectedSession.input_tokens) || "0"} · 输出 {formatTokens(selectedSession.output_tokens) || "0"}</em>
           </div>
           <div class="detail-stat">
             <span>运行</span>
@@ -2769,9 +2942,9 @@
               <em>{topChildProcesses(selectedSession, 1)[0]?.command ? commandLabel(topChildProcesses(selectedSession, 1)[0].command) : "未发现"}</em>
             </div>
             <div class="signal-card">
-              <span>Memory / 子Agent</span>
+              <span>工程规模 / 子Agent</span>
               <strong>{selectedSession.memory?.file_count ?? 0} / {selectedSession.subagents?.length ?? 0}</strong>
-              <em>{selectedSession.memory?.line_count ?? 0} lines · {quotaOrMcpSummary()}</em>
+              <em>{selectedSession.memory?.line_count ?? 0} 行 · {quotaOrMcpSummary()}</em>
             </div>
           </div>
           {#if orphanPortsForSession(selectedSession, 4).length > 0}
@@ -2793,7 +2966,7 @@
 
         <div class="detail-section">
           <div class="section-title">
-            <span>风险原因</span>
+            <span>告警原因</span>
             {#if selectedSession.tier?.pro_locked_count > 0}
               <em>Pro +{selectedSession.tier.pro_locked_count}</em>
             {/if}
@@ -2806,6 +2979,12 @@
                   <div>
                     <strong>{risk.title}</strong>
                     <p>{risk.message}</p>
+                    {#if risk.evidence}
+                      <em>证据：{risk.evidence}</em>
+                    {/if}
+                    {#if risk.action}
+                      <em>建议：{risk.action}</em>
+                    {/if}
                   </div>
                   {#if risk.is_pro}
                     <em>Pro</em>
@@ -2814,7 +2993,7 @@
               {/each}
             </div>
           {:else}
-            <div class="quiet-box">当前没有发现需要介入的风险</div>
+            <div class="quiet-box">当前没有需要处理的告警</div>
           {/if}
         </div>
 
@@ -2831,12 +3010,34 @@
 
         <div class="detail-section">
           <div class="section-title">
+            <span>权限观察</span>
+            <em>{selectedSession.permission_observations?.length ?? 0} 项</em>
+          </div>
+          {#if selectedSession.permission_observations.length > 0}
+            <div class="permission-list">
+              {#each selectedSession.permission_observations as permission}
+                <div class={`permission-row level-${permission.level}`}>
+                  <span style="color:{permissionLevelColor(permission.level)}">{permissionLevelLabel(permission.level)}</span>
+                  <div>
+                    <strong>{permission.label}</strong>
+                    <p>{permission.scope} · {permission.evidence}</p>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <div class="quiet-box">暂未观察到高权限能力使用</div>
+          {/if}
+        </div>
+
+        <div class="detail-section">
+          <div class="section-title">
             <span>过程信号</span>
-            <em>{selectedSession.tool_calls?.length ?? 0} tools · {selectedSession.file_accesses?.length ?? 0} files</em>
+            <em>{selectedSession.tool_calls?.length ?? 0} 次工具 · {selectedSession.file_accesses?.length ?? 0} 次文件</em>
           </div>
           <div class="history-strip">
             <div>
-              <span>Token turns</span>
+              <span>用量采样</span>
               <strong>{historyPeak(selectedSession.token_history)}</strong>
               <div class="spark-bars">
                 {#each historyBars(selectedSession.token_history, 12) as height}
@@ -2845,7 +3046,7 @@
               </div>
             </div>
             <div>
-              <span>Context</span>
+              <span>上下文采样</span>
               <strong>{historyPeak(selectedSession.context_history)}</strong>
               <em>压缩 {selectedSession.compaction_count ?? 0}</em>
             </div>
@@ -2854,7 +3055,7 @@
             {#each recentToolCalls(selectedSession, 3) as tool}
               <div class={`process-row status-${tool.status}`}>
                 <span>{toolStatusLabel(tool.status)}</span>
-                <strong>{tool.name}</strong>
+                <strong>{displayToolName(tool.name)}</strong>
                 <em>{toolErrorLabel(tool.error_kind) || tool.arg || toolDuration(tool.duration_ms)}</em>
               </div>
             {:else}
@@ -2904,24 +3105,27 @@
         {#each sessions as session, index (sessionKey(session, index))}
           <button type="button" class={`compact-row risk-${session.risk_level || "ok"}`} onclick={() => selectSession(session)}>
             <div class="compact-main">
-              <span class="status-dot"
+              <span class={`status-dot pulse-${pulseToneForSession(session)}`}
                 style="background:{statusColor(session.status)};
                        box-shadow:0 0 5px {statusColor(session.status)}66">
               </span>
               <div class="compact-title">
-                <strong>{session.project_name || session.agent_type}</strong>
-                <span>{conversationTitle(session)} · {conversationSummaryLine(session)}</span>
+                <div class="compact-title-line">
+                  <strong>{session.project_name || session.agent_type}</strong>
+                  <span class={`model-icon ${modelToneClass(session)}`} title={modelBadgeLabel(session)}>{modelInitial(session)}</span>
+                </div>
+                <span>{agentDisplayLabel(session)} · {modelBadgeLabel(session)}</span>
               </div>
             </div>
             <div class="compact-stats">
-              <span>{contextMeterLabel(session)} {contextMeterLabel(session) === "压力" ? pressureLabel(session) : contextLabel(session)}</span>
-              <span>{formatTokens(totalTokens(session)) || "0"} · {session.children?.length ?? 0}p</span>
+              <span>{formatClock(session.last_activity_at)}</span>
+              <span>{permissionCompactLabel(session)}</span>
             </div>
             <div class="compact-risk" style="color:{riskColor(session.risk_level)}">
               {#if session.risks.length > 0}
                 {session.risks[0].title}
               {:else}
-                {riskLabel(session.risk_level)}
+                {livenessLabel(session)}
               {/if}
             </div>
           </button>
@@ -2932,37 +3136,43 @@
         <button type="button" class={`card risk-${session.risk_level || "ok"}`} onclick={() => selectSession(session)}>
           <div class="card-top">
             <div class="agent-left">
-              <span class="status-dot"
+              <span class={`status-dot pulse-${pulseToneForSession(session)}`}
                 style="background:{statusColor(session.status)};
                        box-shadow:0 0 5px {statusColor(session.status)}66">
               </span>
               <span class="agent-name">{session.project_name || session.agent_type}</span>
+              <span class={`model-icon ${modelToneClass(session)}`} title={modelBadgeLabel(session)}>{modelInitial(session)}</span>
             </div>
             <span class="status-tag" style="color:{statusColor(session.status)}">
               {statusLabel(session.status)}
             </span>
           </div>
-          <div class="cwd compact-cwd">{conversationTitle(session)} · {conversationSummaryLine(session)}</div>
+          <div class="session-meta-row">
+            <span class="agent-chip">{agentDisplayLabel(session)}</span>
+            <span class="model-chip">{modelBadgeLabel(session)}</span>
+            <span class="last-seen">{lastActivityLabel(session)}</span>
+          </div>
+          <div class="cwd compact-cwd">
+            {externalPrimaryLine(session)}
+          </div>
           <div class="metrics">
             <div class="metric">
-              <span>{contextMeterLabel(session)}</span>
-              <strong>{contextMeterLabel(session) === "压力" ? pressureLabel(session) : contextLabel(session)}</strong>
-              <div class="meter">
-                <i style="width:{percentWidth(contextMeterValue(session))}; background:{riskColor(session.risk_level)}"></i>
-              </div>
+              <span>状态</span>
+              <strong>{livenessLabel(session)}</strong>
+              <em>{externalSecondaryLine(session)}</em>
             </div>
             <div class="metric token-metric">
-              <span>Token</span>
-              <strong>{formatTokens(totalTokens(session)) || "0"}</strong>
+              <span>权限观察</span>
+              <strong>{session.permission_observations?.length ?? 0}</strong>
             </div>
           </div>
           <div class="card-bottom">
-            <span class="meta-item">运行 {formatDuration(session.started_at)} · {formatRelative(session.last_activity_at)}前 · {session.children?.length ?? 0} proc</span>
-            {#if session.risks.length > 0}
-              <span class="risk-badge" style="color:{riskColor(session.risk_level)}; border-color:{riskColor(session.risk_level)}55">
-                {riskLabel(session.risk_level)}
-              </span>
-              <span class="risk-title">{session.risks[0].title}</span>
+            {#if highPermissionLabels(session).length > 0}
+              {#each highPermissionLabels(session) as label}
+                <span class="permission-chip">{label}</span>
+              {/each}
+            {:else}
+              <span class="meta-item">{permissionCompactLabel(session)}</span>
             {/if}
           </div>
         </button>
@@ -3161,16 +3371,6 @@
         </div>
         <div class="threshold-grid">
           <label>
-            <span>Context</span>
-            <input
-              type="number"
-              min="50"
-              max="98"
-              bind:value={settings.contextWarningPercent}
-              onchange={() => setContextWarning(settings.contextWarningPercent)}
-            />
-          </label>
-          <label>
             <span>假死</span>
             <input
               type="number"
@@ -3181,7 +3381,7 @@
             />
           </label>
           <label>
-            <span>Token</span>
+            <span>累计用量</span>
             <select bind:value={settings.tokenWarningThreshold} onchange={() => setTokenThreshold(settings.tokenWarningThreshold)}>
               <option value={500000}>500k</option>
               <option value={1000000}>1M</option>
@@ -3439,11 +3639,11 @@
 
   :global(:root) {
     --obs-surface-page: #1b1d22;
-    --obs-surface-panel-top: rgba(36, 43, 49, 0.93);
-    --obs-surface-panel-bottom: rgba(17, 20, 25, 0.96);
-    --obs-surface-card: rgba(255, 255, 255, 0.075);
-    --obs-surface-card-soft: rgba(255, 255, 255, 0.055);
-    --obs-surface-card-muted: rgba(255, 255, 255, 0.065);
+    --obs-surface-panel-top: rgba(34, 41, 47, 0.985);
+    --obs-surface-panel-bottom: rgba(14, 18, 22, 0.99);
+    --obs-surface-card: rgba(255, 255, 255, 0.105);
+    --obs-surface-card-soft: rgba(255, 255, 255, 0.082);
+    --obs-surface-card-muted: rgba(255, 255, 255, 0.095);
     --obs-surface-hover: rgba(255, 255, 255, 0.14);
     --obs-surface-pressed: rgba(255, 255, 255, 0.17);
     --obs-surface-sunken: rgba(0, 0, 0, 0.15);
@@ -4155,6 +4355,16 @@
     color: rgba(238, 243, 247, 0.45);
   }
 
+  .inspector-risk em,
+  .risk-feed-item em {
+    display: block;
+    margin-top: 5px;
+    font-style: normal;
+    font-size: 10px;
+    line-height: 1.35;
+    color: rgba(238, 243, 247, 0.42);
+  }
+
   .conversation-card {
     min-width: 0;
     border-radius: 8px;
@@ -4703,26 +4913,41 @@
     border-bottom: 1px solid var(--obs-border-soft);
   }
 
-  .overview-health-card {
-    min-height: 76px;
+  .overview-monitor-card {
+    width: 100%;
+    max-width: 100%;
+    min-height: 78px;
     display: grid;
-    grid-template-columns: 96px minmax(0, 1fr);
-    align-items: stretch;
-    gap: 9px;
-    padding: 10px;
+    grid-template-columns: minmax(116px, 1fr) max-content;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 11px;
     border-radius: 11px;
     border: 0.5px solid var(--obs-border-soft);
-    background:
-      radial-gradient(circle at 14% 18%, rgba(78, 202, 255, 0.12), transparent 38%),
-      rgba(255, 255, 255, 0.052);
+    background: rgba(255, 255, 255, 0.052);
   }
 
-  .overview-score {
+  .overview-monitor-card.tone-critical {
+    border-color: var(--obs-status-critical-border);
+    background: var(--obs-status-critical-soft);
+  }
+
+  .overview-monitor-card.tone-warning {
+    border-color: var(--obs-status-warning-border);
+    background: var(--obs-status-warning-soft);
+  }
+
+  .overview-monitor-card.tone-work {
+    border-color: rgba(255, 154, 60, 0.22);
+    background: rgba(255, 154, 60, 0.075);
+  }
+
+  .overview-monitor-copy {
     min-width: 0;
   }
 
-  .overview-score span,
-  .overview-score em,
+  .overview-monitor-copy span,
+  .overview-monitor-copy em,
   .overview-metric span,
   .overview-metric em {
     display: block;
@@ -4733,48 +4958,111 @@
     font-style: normal;
   }
 
-  .overview-score span {
+  .overview-monitor-copy span {
     font-size: 10px;
     color: var(--obs-text-muted);
   }
 
-  .overview-score strong {
+  .overview-monitor-copy strong {
     display: block;
-    margin-top: 4px;
-    font-size: 32px;
-    line-height: 0.98;
+    margin-top: 3px;
+    font-size: 21px;
+    line-height: 1.08;
     letter-spacing: 0;
   }
 
-  .overview-score em {
+  .overview-monitor-copy em {
     margin-top: 5px;
     font-size: 10px;
     color: var(--obs-text-secondary);
   }
 
-  .overview-heatmap {
-    align-self: center;
+  .overview-signal-grid {
+    min-width: 0;
+    justify-self: end;
     display: grid;
-    grid-template-columns: repeat(10, 1fr);
-    gap: 4px;
-    min-width: 0;
+    grid-template-columns: repeat(10, 15px);
+    grid-auto-rows: 15px;
+    gap: 6px;
+    padding: 2px;
   }
 
-  .overview-heatmap i {
-    display: block;
-    aspect-ratio: 1;
-    min-width: 0;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.12);
-    box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.045);
+  .overview-signal-cell {
+    width: 15px;
+    height: 15px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.075);
+    border: 0.5px solid rgba(255, 255, 255, 0.055);
+    box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.035);
+    opacity: 0.62;
   }
 
-  .overview-heatmap .tone-ok { background: var(--obs-status-ok); }
-  .overview-heatmap .tone-work { background: var(--obs-status-work); }
-  .overview-heatmap .tone-warning { background: var(--obs-status-warning); }
-  .overview-heatmap .tone-critical { background: var(--obs-status-critical); }
-  .overview-heatmap .tone-info { background: var(--obs-status-info); }
-  .overview-heatmap .tone-idle { background: rgba(255, 255, 255, 0.16); }
+  .overview-signal-cell.active {
+    background: var(--cell-color);
+    border-color: color-mix(in srgb, var(--cell-color) 42%, rgba(255,255,255,0.12));
+    opacity: 0.88;
+    box-shadow:
+      inset 0 0 0 0.5px color-mix(in srgb, var(--cell-color) 58%, rgba(255,255,255,0.16)),
+      0 0 0 1px color-mix(in srgb, var(--cell-color) 10%, transparent),
+      0 0 11px color-mix(in srgb, var(--cell-color) 36%, transparent);
+    animation: signal-cell-breathe 3.2s var(--obs-ease-soft) infinite;
+    animation-delay: var(--cell-delay);
+  }
+
+  .overview-signal-cell.active.tone-work {
+    animation-duration: 1.55s;
+  }
+
+  .overview-signal-cell.active.tone-warning {
+    animation-duration: 3.8s;
+  }
+
+  .overview-signal-cell.active.tone-critical {
+    animation: signal-cell-alert 2.7s ease-in-out infinite;
+    animation-delay: var(--cell-delay);
+  }
+
+  @keyframes signal-cell-breathe {
+    0%, 100% {
+      transform: scale(0.92);
+      opacity: 0.72;
+      box-shadow:
+        inset 0 0 0 0.5px color-mix(in srgb, var(--cell-color) 48%, rgba(255,255,255,0.12)),
+        0 0 0 1px color-mix(in srgb, var(--cell-color) 8%, transparent),
+        0 0 7px color-mix(in srgb, var(--cell-color) 24%, transparent);
+    }
+    50% {
+      transform: scale(1.05);
+      opacity: 1;
+      box-shadow:
+        inset 0 0 0 0.5px color-mix(in srgb, var(--cell-color) 72%, rgba(255,255,255,0.18)),
+        0 0 0 2px color-mix(in srgb, var(--cell-color) 14%, transparent),
+        0 0 15px color-mix(in srgb, var(--cell-color) 50%, transparent);
+    }
+  }
+
+  @keyframes signal-cell-alert {
+    0%, 100% {
+      transform: scale(0.9);
+      opacity: 0.62;
+      box-shadow:
+        inset 0 0 0 0.5px color-mix(in srgb, var(--cell-color) 48%, rgba(255,255,255,0.12)),
+        0 0 0 1px color-mix(in srgb, var(--cell-color) 9%, transparent),
+        0 0 8px color-mix(in srgb, var(--cell-color) 28%, transparent);
+    }
+    44% {
+      transform: scale(1.08);
+      opacity: 1;
+      box-shadow:
+        inset 0 0 0 0.5px color-mix(in srgb, var(--cell-color) 75%, rgba(255,255,255,0.2)),
+        0 0 0 2px color-mix(in srgb, var(--cell-color) 17%, transparent),
+        0 0 17px color-mix(in srgb, var(--cell-color) 58%, transparent);
+    }
+    62% {
+      transform: scale(0.88);
+      opacity: 0.52;
+    }
+  }
 
   .overview-metrics {
     display: grid;
@@ -4925,7 +5213,7 @@
     width: 100%;
     min-height: 36px;
     display: grid;
-    grid-template-columns: minmax(0, 1.25fr) minmax(96px, 0.72fr) minmax(70px, 0.58fr);
+    grid-template-columns: minmax(0, 1.2fr) 118px 72px;
     align-items: center;
     gap: 8px;
     border-radius: var(--obs-control-radius);
@@ -4973,6 +5261,13 @@
     gap: 1px;
   }
 
+  .compact-title-line {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
   .compact-title strong {
     min-width: 0;
     font-size: 11.5px;
@@ -5001,9 +5296,9 @@
   .compact-stats {
     min-width: 0;
     display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 6px;
-    justify-content: end;
+    grid-template-columns: 38px minmax(0, 1fr);
+    gap: 7px;
+    justify-content: start;
     color: var(--obs-text-secondary);
   }
 
@@ -5301,7 +5596,16 @@
     color: var(--obs-text-muted);
   }
 
-  .risk-row em {
+  .risk-row div em {
+    display: block;
+    margin-top: 4px;
+    font-style: normal;
+    font-size: 9.5px;
+    line-height: 1.35;
+    color: var(--obs-text-secondary);
+  }
+
+  .risk-row > em {
     font-style: normal;
     font-size: 9px;
     color: var(--obs-text-secondary);
@@ -5313,6 +5617,60 @@
 
   .risk-row.pro-risk {
     border-color: var(--obs-border-strong);
+  }
+
+  .permission-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .permission-row {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 8px;
+    align-items: flex-start;
+    border-radius: var(--obs-card-radius);
+    padding: 8px 9px;
+    background: var(--obs-surface-card-muted);
+    border: 0.5px solid var(--obs-border-soft);
+  }
+
+  .permission-row.level-high {
+    background: rgba(255, 184, 77, 0.095);
+    border-color: rgba(255, 184, 77, 0.22);
+  }
+
+  .permission-row > span {
+    font-size: 9.5px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .permission-row strong,
+  .permission-row p {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .permission-row strong {
+    font-size: 11.5px;
+    line-height: 1.25;
+    color: var(--obs-text-strong);
+    white-space: nowrap;
+  }
+
+  .permission-row p {
+    margin: 4px 0 0;
+    font-size: 10px;
+    line-height: 1.35;
+    color: var(--obs-text-muted);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
 
   .capability-grid {
@@ -5501,13 +5859,85 @@
     flex-shrink: 0;
   }
 
+  .status-dot.pulse-ok {
+    animation: status-pulse 3.2s var(--obs-ease-soft) infinite;
+  }
+
+  .status-dot.pulse-work {
+    animation: status-pulse 1.45s var(--obs-ease-soft) infinite;
+  }
+
+  .status-dot.pulse-warning {
+    animation: status-pulse 3.8s var(--obs-ease-soft) infinite;
+  }
+
+  .status-dot.pulse-critical {
+    animation: status-alert 2.7s ease-in-out infinite;
+  }
+
+  .status-dot.pulse-idle {
+    opacity: 0.46;
+  }
+
+  @keyframes status-pulse {
+    0%, 100% { transform: scale(0.82); opacity: 0.66; }
+    50% { transform: scale(1.18); opacity: 1; }
+  }
+
+  @keyframes status-alert {
+    0%, 100% { transform: scale(0.82); opacity: 0.48; }
+    45% { transform: scale(1.22); opacity: 1; }
+    64% { transform: scale(0.78); opacity: 0.36; }
+  }
+
   .agent-name {
+    min-width: 0;
     font-size: 12.5px;
     font-weight: 600;
     color: rgba(255, 255, 255, 0.95);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .model-icon {
+    flex-shrink: 0;
+    width: 17px;
+    height: 17px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    font-size: 8.5px;
+    font-weight: 800;
+    line-height: 1;
+    border: 0.5px solid rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.88);
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .model-icon.tone-claude {
+    color: #ffb84d;
+    border-color: rgba(255, 184, 77, 0.28);
+    background: rgba(255, 184, 77, 0.11);
+  }
+
+  .model-icon.tone-openai {
+    color: #4cd4a0;
+    border-color: rgba(76, 212, 160, 0.25);
+    background: rgba(76, 212, 160, 0.10);
+  }
+
+  .model-icon.tone-opencode {
+    color: #4ecaff;
+    border-color: rgba(78, 202, 255, 0.25);
+    background: rgba(78, 202, 255, 0.10);
+  }
+
+  .model-icon.tone-cn {
+    color: #ff7aa6;
+    border-color: rgba(255, 122, 166, 0.25);
+    background: rgba(255, 122, 166, 0.10);
   }
 
   .status-tag {
@@ -5527,6 +5957,14 @@
     margin-bottom: 5px;
     font-family: "SF Mono", "Menlo", "Monaco", monospace;
     letter-spacing: 0;
+  }
+
+  .session-meta-row {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin: 4px 0 5px;
   }
 
   .session-line {
@@ -5556,6 +5994,14 @@
   .agent-chip {
     color: rgba(255, 255, 255, 0.58);
     max-width: 86px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .model-chip {
+    color: rgba(255, 255, 255, 0.62);
+    max-width: 128px;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
   }
@@ -5592,6 +6038,16 @@
     font-weight: 700;
   }
 
+  .metric em {
+    min-width: 0;
+    font-style: normal;
+    font-size: 8.8px;
+    color: rgba(255, 255, 255, 0.34);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .token-metric {
     grid-template-columns: auto auto;
     justify-content: end;
@@ -5623,11 +6079,17 @@
   .meta-item { white-space: nowrap; }
   .meta-sep { opacity: 0.5; }
 
-  .model-chip {
-    color: rgba(255, 255, 255, 0.48);
-    max-width: 112px;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .permission-chip {
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 5px;
+    padding: 0 6px;
+    font-size: 9px;
+    color: #ffb84d;
+    white-space: nowrap;
+    border: 0.5px solid rgba(255, 184, 77, 0.22);
+    background: rgba(255, 184, 77, 0.10);
   }
 
   .risk-badge {

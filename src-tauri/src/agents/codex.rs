@@ -470,6 +470,7 @@ fn parse_rollout(
         children: vec![],
         subagents: vec![],
         memory: MemoryInfo::default(),
+        permission_observations: vec![],
         risk_level: "ok".to_string(),
         risks: vec![],
         capabilities,
@@ -643,7 +644,7 @@ mod tests {
         assert_eq!(session.conversation_summary.tool_turn_count, 1);
         assert_eq!(
             session.conversation_summary.title.as_deref(),
-            Some("MCP browser.open")
+            Some("使用浏览器工具")
         );
 
         let _ = fs::remove_dir_all(dir);

@@ -51,6 +51,8 @@ pub struct AgentSession {
     #[serde(default)]
     pub subagents: Vec<SubAgentInfo>,
     pub memory: MemoryInfo,
+    #[serde(default)]
+    pub permission_observations: Vec<PermissionObservation>,
     pub risk_level: String,
     pub risks: Vec<SessionRisk>,
     pub capabilities: SessionCapabilities,
@@ -219,7 +221,7 @@ pub(crate) fn safe_task_title(task: Option<&str>) -> Option<String> {
             .unwrap_or(rest)
             .trim_matches(|ch: char| ch == ':' || ch == '，' || ch == ',');
         if !name.is_empty() {
-            return Some(format!("调用 {name}"));
+            return Some(display_tool_name(name));
         }
     }
     if task.starts_with("MCP ") {
@@ -229,7 +231,7 @@ pub(crate) fn safe_task_title(task: Option<&str>) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" ");
         if !label.is_empty() {
-            return Some(label);
+            return Some(display_tool_name(&label));
         }
     }
     if task.starts_with("effort ") {
@@ -285,6 +287,17 @@ pub struct FileAccess {
     pub path: String,
     pub operation: String,
     pub tool: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionObservation {
+    pub key: String,
+    pub label: String,
+    pub level: String,
+    pub scope: String,
+    pub evidence: String,
+    pub source: String,
+    pub last_seen_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -403,6 +416,16 @@ pub struct SessionRisk {
     pub severity: String,
     pub title: String,
     pub message: String,
+    #[serde(default)]
+    pub evidence: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub confidence: String,
+    #[serde(default)]
+    pub raw_code: Option<String>,
     pub is_pro: bool,
 }
 
@@ -668,6 +691,7 @@ fn finalize_session(
     session.capabilities.process_tree = !session.children.is_empty();
     session.capabilities.subagents = !session.subagents.is_empty();
     session.capabilities.memory = session.memory.file_count > 0 || session.memory.line_count > 0;
+    session.permission_observations = derive_permission_observations(&session);
     apply_risks_and_tier(&mut session, settings);
     session
 }
@@ -697,6 +721,282 @@ fn apply_risks_and_tier(session: &mut AgentSession, settings: &AppSettings) {
     } else {
         pro_signal_count
     };
+}
+
+fn derive_permission_observations(session: &AgentSession) -> Vec<PermissionObservation> {
+    let mut by_key: HashMap<String, PermissionObservation> = HashMap::new();
+
+    for call in &session.tool_calls {
+        let normalized = normalize_tool_name(&call.name);
+        let lower = normalized.to_ascii_lowercase();
+        if is_shell_tool(&lower) {
+            insert_permission_observation(
+                &mut by_key,
+                PermissionObservation {
+                    key: "terminal_command".to_string(),
+                    label: "执行终端命令".to_string(),
+                    level: "high".to_string(),
+                    scope: "本机命令行".to_string(),
+                    evidence: tool_evidence(call, "调用过终端/脚本执行工具"),
+                    source: "tool_call".to_string(),
+                    last_seen_at: call.started_at,
+                },
+            );
+        }
+        if is_browser_tool(&lower) {
+            insert_permission_observation(
+                &mut by_key,
+                PermissionObservation {
+                    key: "browser_access".to_string(),
+                    label: "使用浏览器或网页工具".to_string(),
+                    level: "medium".to_string(),
+                    scope: "网页/浏览器".to_string(),
+                    evidence: tool_evidence(call, "调用过浏览器或网页访问工具"),
+                    source: "tool_call".to_string(),
+                    last_seen_at: call.started_at,
+                },
+            );
+        }
+        if is_screen_tool(&lower) {
+            insert_permission_observation(
+                &mut by_key,
+                PermissionObservation {
+                    key: "screen_or_desktop_access".to_string(),
+                    label: "可能读取屏幕或桌面状态".to_string(),
+                    level: "high".to_string(),
+                    scope: "屏幕/桌面".to_string(),
+                    evidence: tool_evidence(call, "工具名包含屏幕、截图或桌面控制信号"),
+                    source: "tool_call".to_string(),
+                    last_seen_at: call.started_at,
+                },
+            );
+        }
+    }
+
+    let mut file_read = false;
+    let mut file_write = false;
+    let mut external_access: Option<&FileAccess> = None;
+    for access in &session.file_accesses {
+        match access.operation.as_str() {
+            "write" | "edit" => file_write = true,
+            "read" => file_read = true,
+            _ => {}
+        }
+        if !file_inside_project(&session.cwd, &access.path) {
+            external_access = Some(access);
+        }
+    }
+
+    if file_read || file_write {
+        insert_permission_observation(
+            &mut by_key,
+            PermissionObservation {
+                key: "project_file_access".to_string(),
+                label: if file_write {
+                    "读写工程文件".to_string()
+                } else {
+                    "读取工程文件".to_string()
+                },
+                level: if file_write { "medium" } else { "low" }.to_string(),
+                scope: "当前工程目录".to_string(),
+                evidence: format!(
+                    "最近记录到 {} 次文件访问。",
+                    session.file_accesses.len()
+                ),
+                source: "file_access".to_string(),
+                last_seen_at: session.conversation_summary.last_signal_at,
+            },
+        );
+    }
+
+    if let Some(access) = external_access {
+        insert_permission_observation(
+            &mut by_key,
+            PermissionObservation {
+                key: "external_file_access".to_string(),
+                label: "访问工程外文件".to_string(),
+                level: "high".to_string(),
+                scope: "当前工程目录之外".to_string(),
+                evidence: format!(
+                    "{} {}。",
+                    file_operation_label(&access.operation),
+                    display_permission_path(&access.path)
+                ),
+                source: "file_access".to_string(),
+                last_seen_at: session.conversation_summary.last_signal_at,
+            },
+        );
+    }
+
+    if !session.children.is_empty() {
+        insert_permission_observation(
+            &mut by_key,
+            PermissionObservation {
+                key: "child_processes".to_string(),
+                label: "启动后台进程".to_string(),
+                level: "medium".to_string(),
+                scope: "本机进程".to_string(),
+                evidence: format!("关联到 {} 个子进程。", session.children.len()),
+                source: "process_tree".to_string(),
+                last_seen_at: Some(session.last_activity_at),
+            },
+        );
+    }
+
+    if !session.ports.is_empty() {
+        insert_permission_observation(
+            &mut by_key,
+            PermissionObservation {
+                key: "network_listener".to_string(),
+                label: "打开本地监听端口".to_string(),
+                level: "medium".to_string(),
+                scope: "本地网络".to_string(),
+                evidence: format!(
+                    "监听端口：{}。",
+                    session
+                        .ports
+                        .iter()
+                        .map(|port| format!(":{}", port.port))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                ),
+                source: "process_ports".to_string(),
+                last_seen_at: Some(session.last_activity_at),
+            },
+        );
+    }
+
+    let mut observations = by_key.into_values().collect::<Vec<_>>();
+    observations.sort_by(|a, b| {
+        permission_level_rank(&b.level)
+            .cmp(&permission_level_rank(&a.level))
+            .then_with(|| b.last_seen_at.cmp(&a.last_seen_at))
+            .then_with(|| a.label.cmp(&b.label))
+    });
+    observations.truncate(12);
+    observations
+}
+
+fn insert_permission_observation(
+    by_key: &mut HashMap<String, PermissionObservation>,
+    observation: PermissionObservation,
+) {
+    match by_key.get(&observation.key) {
+        Some(existing)
+            if permission_level_rank(&existing.level) > permission_level_rank(&observation.level)
+                || existing.last_seen_at >= observation.last_seen_at =>
+        {
+            return;
+        }
+        _ => {}
+    }
+    by_key.insert(observation.key.clone(), observation);
+}
+
+fn normalize_tool_name(name: &str) -> String {
+    name.trim()
+        .strip_prefix("MCP ")
+        .unwrap_or(name.trim())
+        .to_string()
+}
+
+fn is_shell_tool(lower: &str) -> bool {
+    lower.contains("bash")
+        || lower.contains("shell")
+        || lower.contains("exec")
+        || lower.contains("stdin")
+        || lower.contains("terminal")
+        || lower.contains("command")
+}
+
+fn is_browser_tool(lower: &str) -> bool {
+    lower.contains("browser")
+        || lower.contains("webfetch")
+        || lower.contains("web_fetch")
+        || lower.contains("websearch")
+        || lower.contains("web_search")
+        || lower.contains("playwright")
+        || lower.contains("chrome")
+}
+
+fn is_screen_tool(lower: &str) -> bool {
+    lower.contains("screen")
+        || lower.contains("screenshot")
+        || lower.contains("desktop")
+        || lower.contains("computer_use")
+        || lower.contains("computer-use")
+}
+
+fn tool_evidence(call: &ToolCall, fallback: &str) -> String {
+    let label = display_tool_name(&call.name);
+    if call.arg.trim().is_empty() {
+        format!("{fallback}：{label}。")
+    } else {
+        format!("{fallback}：{label}，参数 {}。", call.arg)
+    }
+}
+
+fn display_tool_name(name: &str) -> String {
+    let normalized = normalize_tool_name(name);
+    let lower = normalized.to_ascii_lowercase();
+    if lower.contains("write_stdin") || lower.contains("stdin") {
+        "向终端输入内容".to_string()
+    } else if lower.contains("read_thread_terminal") || lower.contains("terminal_output") {
+        "读取终端输出".to_string()
+    } else if is_shell_tool(&lower) {
+        "执行终端命令".to_string()
+    } else if lower.contains("browser") || lower.contains("chrome") || lower.contains("playwright") {
+        "使用浏览器工具".to_string()
+    } else if lower.contains("websearch") || lower.contains("web_search") {
+        "搜索网页".to_string()
+    } else if lower.contains("webfetch") || lower.contains("web_fetch") {
+        "读取网页内容".to_string()
+    } else if is_screen_tool(&lower) {
+        "读取屏幕或桌面状态".to_string()
+    } else if lower == "read" || lower.ends_with(".read") {
+        "读取文件".to_string()
+    } else if lower == "write" || lower.ends_with(".write") {
+        "写入文件".to_string()
+    } else if lower == "edit" || lower.contains("edit") || lower.contains("patch") {
+        "修改文件".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn file_inside_project(cwd: &str, path: &str) -> bool {
+    let project = Path::new(cwd);
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return true;
+    }
+    path.starts_with(project)
+}
+
+fn display_permission_path(path: &str) -> String {
+    let path = path.trim();
+    if path.is_empty() {
+        return "未知路径".to_string();
+    }
+    path.replace(std::env::var("HOME").unwrap_or_default().as_str(), "~")
+}
+
+fn file_operation_label(operation: &str) -> &'static str {
+    match operation {
+        "read" => "读取",
+        "write" => "写入",
+        "edit" => "修改",
+        _ => "访问",
+    }
+}
+
+fn permission_level_rank(level: &str) -> u8 {
+    match level {
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    }
 }
 
 fn collect_child_processes(
@@ -992,6 +1292,18 @@ fn apply_port_conflict_risks(
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            &format!(
+                "冲突端口：{}。",
+                ports
+                    .iter()
+                    .map(|port| format!(":{port}"))
+                    .collect::<Vec<_>>()
+                    .join("、")
+            ),
+            "确认这些服务是否仍被当前任务使用；若不是预期服务，可以清理残留进程。",
+            "process_ports",
+            "medium",
+            Some("port_conflict".to_string()),
             true,
         ));
         apply_risks_and_tier(session, settings);
@@ -1454,64 +1766,24 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
         + session.cache_read_tokens
         + session.cache_create_tokens;
 
-    if matches!(session.context_percent, Some(percent) if percent >= settings.context_critical_percent)
-    {
-        risks.push(risk(
-            "context_critical",
-            "critical",
-            "上下文即将耗尽",
-            &format!(
-                "Context 已超过 {:.0}%，建议尽快压缩或收尾。",
-                settings.context_critical_percent
-            ),
-            false,
-        ));
-    } else if matches!(session.context_percent, Some(percent) if percent >= settings.context_warning_percent)
-    {
-        risks.push(risk(
-            "context_high",
-            "warning",
-            "上下文偏高",
-            &format!(
-                "Context 已超过 {:.0}%，长任务继续运行可能触发压缩。",
-                settings.context_warning_percent
-            ),
-            false,
-        ));
-    } else if matches!(session.context_percent, Some(percent) if percent >= settings.context_watch_percent())
-    {
-        risks.push(risk(
-            "context_watch",
-            "info",
-            "上下文进入观察区",
-            &format!(
-                "Context 已超过 {:.0}%，建议关注后续增长。",
-                settings.context_watch_percent()
-            ),
-            false,
-        ));
-    }
-
-    if session.context_percent.is_none()
-        && matches!(session.context_pressure_percent, Some(percent) if percent >= 95.0)
-    {
-        risks.push(risk(
-            "context_pressure_high",
-            "info",
-            "累计压力较高",
-            "该数值来自累计 token，不等于自动压缩后的当前上下文，仅作为观察信号。",
-            false,
-        ));
-    }
-
     if inactive_secs >= settings.stalled_critical_minutes as i64 * 60
         && matches!(session.status.as_str(), "thinking" | "executing" | "busy")
     {
         risks.push(risk(
             "stalled",
             "critical",
-            "疑似假死",
-            "长时间没有检测到新活动，但会话仍显示在工作。",
+            "疑似无响应",
+            "Agent 仍显示工作中，但长时间没有采集到新的活动信号。",
+            &format!(
+                "状态：{}；最后活动：{}；阈值：{} 分钟。",
+                session.status,
+                format_duration_minutes(inactive_secs),
+                settings.stalled_critical_minutes
+            ),
+            "打开 Agent 或终端确认是否卡在审批、网络或工具调用；确认无用后再终止。",
+            "activity_gap",
+            "medium",
+            Some("stalled_inactive".to_string()),
             true,
         ));
     } else if inactive_secs >= settings.stalled_warning_minutes as i64 * 60
@@ -1522,9 +1794,19 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
             "warning",
             "长时间无进展",
             &format!(
-                "超过 {} 分钟没有检测到新活动，建议稍后检查。",
+                "超过 {} 分钟没有检测到新活动，Agent 可能仍在等待外部条件。",
                 settings.stalled_warning_minutes
             ),
+            &format!(
+                "状态：{}；最后活动：{}；阈值：{} 分钟。",
+                session.status,
+                format_duration_minutes(inactive_secs),
+                settings.stalled_warning_minutes
+            ),
+            "先观察或聚焦 Agent；如果后续仍无日志、token 或工具信号，再按无响应处理。",
+            "activity_gap",
+            "medium",
+            Some("stalled_watch".to_string()),
             true,
         ));
     }
@@ -1533,11 +1815,22 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
         risks.push(risk(
             "token_heavy",
             "warning",
-            "Token 消耗较高",
+            "Token 用量偏高",
             &format!(
-                "该会话累计 token 已超过 {}，建议关注成本和上下文。",
+                "该会话累计 token 已超过 {}，适合作为费用或额度异常提醒。",
                 format_token_threshold(settings.token_warning_threshold)
             ),
+            &format!(
+                "累计：{}；输入：{}；输出：{}；缓存读：{}。",
+                format_token_threshold(total_tokens),
+                format_token_threshold(session.input_tokens),
+                format_token_threshold(session.output_tokens),
+                format_token_threshold(session.cache_read_tokens)
+            ),
+            "如果用量不符合预期，暂停长任务并查看最近工具调用和对话摘要。",
+            "token_usage",
+            "high",
+            Some("token_threshold".to_string()),
             true,
         ));
     }
@@ -1547,31 +1840,67 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
             "rate_limited",
             "critical",
             "触发限流",
-            "Agent 当前可能在等待额度恢复。",
+            "Agent 当前处于额度恢复等待状态。",
+            "状态字段为 rate_limited；Codex/OpenCode 可从结构化限流字段识别，Claude 依赖 statusLine 或日志信号。",
+            "等待额度恢复，或切换模型/账号；打开详情查看当前额度窗口。",
+            "agent_status",
+            "high",
+            Some("rate_limited".to_string()),
             false,
         ));
     }
 
     if session.status == "error" {
+        let latest_error = session
+            .tool_calls
+            .iter()
+            .rev()
+            .find(|call| call.status == "error");
+        let evidence = latest_error
+            .map(|call| {
+                format!(
+                    "工具：{}；错误类型：{}；耗时：{}ms。",
+                    call.name,
+                    call.error_kind.as_deref().unwrap_or("unknown"),
+                    call.duration_ms
+                )
+            })
+            .unwrap_or_else(|| "会话状态为 error；最近记录包含 error/failed/timeout 信号。".to_string());
+        let raw_code = latest_error
+            .and_then(|call| call.error_kind.clone())
+            .or_else(|| Some("session_error".to_string()));
         risks.push(risk(
             "error",
             "critical",
             "检测到错误",
-            "最近会话记录中出现错误信号。",
+            "最近会话记录中出现错误信号，需要确认任务是否已经失败。",
+            &evidence,
+            "打开详情查看失败工具和最近活动；必要时复制诊断摘要交给 Agent 修复。",
+            "agent_log",
+            "medium",
+            raw_code,
             false,
         ));
     }
 
-    if session
+    if let Some(git) = session
         .git
         .as_ref()
-        .is_some_and(|git| git.is_dirty && git.changed_files >= 20)
+        .filter(|git| git.is_dirty && git.changed_files >= 20)
     {
         risks.push(risk(
             "git_dirty_heavy",
             "info",
             "工程改动较多",
-            "当前项目有较多未提交改动，长任务继续写入前建议关注 Git 状态。",
+            "当前项目有较多未提交改动，继续运行前建议关注 Git 状态。",
+            &format!(
+                "分支：{}；改动文件：{}。",
+                git.branch, git.changed_files
+            ),
+            "确认是否需要提交、暂存或备份当前改动。",
+            "git_status",
+            "high",
+            Some("git_dirty_heavy".to_string()),
             true,
         ));
     }
@@ -1580,8 +1909,22 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
         risks.push(risk(
             "ports_after_idle",
             "info",
-            "检测到监听端口",
-            "会话已不活跃但仍有关联监听端口，可能需要确认是否为预期服务。",
+            "会话停下但端口仍在",
+            "会话已不活跃，但仍有关联监听端口。",
+            &format!(
+                "监听端口：{}；状态：{}。",
+                session
+                    .ports
+                    .iter()
+                    .map(|port| format!(":{}", port.port))
+                    .collect::<Vec<_>>()
+                    .join("、"),
+                session.status
+            ),
+            "确认服务是否仍需要运行；如果不是预期服务，可以清理残留进程。",
+            "process_ports",
+            "high",
+            Some("ports_after_idle".to_string()),
             true,
         ));
     }
@@ -1593,8 +1936,17 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
         risks.push(risk(
             "child_process_after_idle",
             "info",
-            "仍有子进程",
-            "会话已不活跃但仍有关联子进程，可能是后台脚本、测试或残留任务。",
+            "会话停下但子进程仍在",
+            "会话已不活跃，但仍有关联子进程。",
+            &format!(
+                "子进程数量：{}；状态：{}。",
+                session.children.len(),
+                session.status
+            ),
+            "确认这些进程是否属于预期后台任务；如果不是，打开终端处理。",
+            "process_tree",
+            "medium",
+            Some("child_process_after_idle".to_string()),
             true,
         ));
     }
@@ -1602,13 +1954,37 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
     risks
 }
 
-fn risk(kind: &str, severity: &str, title: &str, message: &str, is_pro: bool) -> SessionRisk {
+fn risk(
+    kind: &str,
+    severity: &str,
+    title: &str,
+    message: &str,
+    evidence: &str,
+    action: &str,
+    source: &str,
+    confidence: &str,
+    raw_code: Option<String>,
+    is_pro: bool,
+) -> SessionRisk {
     SessionRisk {
         kind: kind.to_string(),
         severity: severity.to_string(),
         title: title.to_string(),
         message: message.to_string(),
+        evidence: evidence.to_string(),
+        action: action.to_string(),
+        source: source.to_string(),
+        confidence: confidence.to_string(),
+        raw_code,
         is_pro,
+    }
+}
+
+fn format_duration_minutes(seconds: i64) -> String {
+    if seconds < 60 {
+        format!("{seconds} 秒")
+    } else {
+        format!("{} 分钟", seconds / 60)
     }
 }
 
@@ -1642,32 +2018,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_context_critical_uses_configured_threshold() {
-        let mut settings = AppSettings::default();
-        settings.context_critical_percent = 96.0;
-        let mut session = sample_session();
-        session.context_percent = Some(96.0);
-
-        let risks = derive_risks(&session, &settings);
-
-        assert!(risks
-            .iter()
-            .any(|risk| risk.kind == "context_critical" && risk.severity == "critical"));
-    }
-
-    #[test]
-    fn cumulative_context_pressure_is_info_only() {
+    fn context_values_do_not_create_alerts() {
         let settings = AppSettings::default();
         let mut session = sample_session();
-        session.context_percent = None;
+        session.context_percent = Some(99.0);
         session.context_pressure_percent = Some(100.0);
 
         let risks = derive_risks(&session, &settings);
 
-        assert!(risks
-            .iter()
-            .any(|risk| risk.kind == "context_pressure_high" && risk.severity == "info"));
-        assert!(!risks.iter().any(|risk| risk.kind == "context_critical"));
+        assert!(!risks.iter().any(|risk| risk.kind.contains("context")));
     }
 
     #[test]
@@ -1685,6 +2044,27 @@ mod tests {
             .iter()
             .any(|risk| risk.kind == "stalled_watch" && risk.severity == "warning"));
         assert!(!risks.iter().any(|risk| risk.kind == "stalled"));
+    }
+
+    #[test]
+    fn alerts_include_evidence_action_and_source() {
+        let mut settings = AppSettings::default();
+        settings.stalled_warning_minutes = 5;
+        settings.stalled_critical_minutes = 20;
+        let mut session = sample_session();
+        session.status = "thinking".to_string();
+        session.last_activity_at = now_seconds() - 6 * 60;
+
+        let risks = derive_risks(&session, &settings);
+        let risk = risks
+            .iter()
+            .find(|risk| risk.kind == "stalled_watch")
+            .unwrap();
+
+        assert!(!risk.evidence.is_empty());
+        assert!(!risk.action.is_empty());
+        assert_eq!(risk.source, "activity_gap");
+        assert_eq!(risk.confidence, "medium");
     }
 
     #[test]
@@ -1865,6 +2245,33 @@ mod tests {
     }
 
     #[test]
+    fn permission_observations_include_shell_and_external_files() {
+        let mut session = sample_session();
+        session.tool_calls = vec![ToolCall {
+            name: "exec_command".to_string(),
+            arg: "npm test".to_string(),
+            duration_ms: 100,
+            status: "done".to_string(),
+            error_kind: None,
+            started_at: Some(now_seconds()),
+        }];
+        session.file_accesses = vec![FileAccess {
+            path: "/Users/test/secret.txt".to_string(),
+            operation: "read".to_string(),
+            tool: "Read".to_string(),
+        }];
+
+        let observations = derive_permission_observations(&session);
+
+        assert!(observations
+            .iter()
+            .any(|item| item.key == "terminal_command" && item.level == "high"));
+        assert!(observations
+            .iter()
+            .any(|item| item.key == "external_file_access" && item.level == "high"));
+    }
+
+    #[test]
     fn port_conflicts_require_multiple_sessions() {
         let mut first = sample_session();
         first.session_id = "a".to_string();
@@ -1948,6 +2355,7 @@ mod tests {
             children: vec![],
             subagents: vec![],
             memory: MemoryInfo::default(),
+            permission_observations: vec![],
             risk_level: "ok".to_string(),
             risks: vec![],
             capabilities: base_capabilities(),

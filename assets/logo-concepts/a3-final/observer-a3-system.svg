@@ -1,0 +1,263 @@
+<svg width="1800" height="1280" viewBox="0 0 1800 1280" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .bg { fill: #f5f7f7; }
+      .panel { fill: #ffffff; stroke: #dfe7e8; stroke-width: 2; }
+      .ink { stroke: #202d30; }
+      .muted { stroke: #7f8b8e; }
+      .title { fill: #17282c; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; font-size: 50px; font-weight: 780; letter-spacing: 0; }
+      .subtitle { fill: #637376; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-size: 22px; font-weight: 520; letter-spacing: 0; }
+      .label { fill: #203235; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-size: 22px; font-weight: 760; letter-spacing: 0; }
+      .small { fill: #68787b; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-size: 16px; font-weight: 540; letter-spacing: 0; }
+    </style>
+
+    <linearGradient id="appTile" x1="180" y1="160" x2="500" y2="500" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/>
+      <stop offset="0.55" stop-color="#f5fbfa"/>
+      <stop offset="1" stop-color="#e5f3f1"/>
+    </linearGradient>
+
+    <filter id="softShadow" x="-80" y="-70" width="560" height="560" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="22" stdDeviation="26" flood-color="#102a2d" flood-opacity="0.15"/>
+    </filter>
+
+    <filter id="miniShadow" x="-18" y="-12" width="160" height="160" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#102a2d" flood-opacity="0.10"/>
+    </filter>
+
+    <symbol id="a3-base" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="#ffffff" stroke="#202d30" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="#202d30"/>
+      <circle cx="60" cy="44" r="6" fill="#202d30"/>
+    </symbol>
+
+    <symbol id="a3-status-normal" viewBox="0 0 128 128">
+      <use href="#a3-base"/>
+      <circle cx="88" cy="80" r="14" fill="#22b8a8"/>
+    </symbol>
+
+    <symbol id="a3-status-scanning" viewBox="0 0 128 128">
+      <use href="#a3-base"/>
+      <path d="M28 30C48 14 86 15 104 33" stroke="#2c9bf2" stroke-width="8" stroke-linecap="round"/>
+      <circle cx="88" cy="80" r="14" fill="#2c9bf2"/>
+      <circle cx="105" cy="33" r="5" fill="#2c9bf2"/>
+    </symbol>
+
+    <symbol id="a3-status-minor" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="#fffaf0" stroke="#202d30" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="#202d30"/>
+      <circle cx="60" cy="44" r="6" fill="#202d30"/>
+      <circle cx="88" cy="80" r="14" fill="#ff9d2f"/>
+      <circle cx="106" cy="24" r="11" fill="#ffc247" stroke="#ffffff" stroke-width="5"/>
+    </symbol>
+
+    <symbol id="a3-status-warning" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="#fff7e8" stroke="#202d30" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="#202d30"/>
+      <circle cx="60" cy="44" r="6" fill="#202d30"/>
+      <circle cx="88" cy="80" r="14" fill="#f6a21a"/>
+      <path d="M104 25L116 47H92L104 25Z" fill="#ffc247" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"/>
+    </symbol>
+
+    <symbol id="a3-status-critical" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="#fff2f0" stroke="#202d30" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="#202d30"/>
+      <circle cx="60" cy="44" r="6" fill="#202d30"/>
+      <path d="M28 30C48 14 86 15 104 33" stroke="#ff5c56" stroke-width="8" stroke-linecap="round"/>
+      <circle cx="88" cy="80" r="14" fill="#ff5c56"/>
+      <circle cx="88" cy="80" r="24" stroke="#ff5c56" stroke-width="5" opacity="0.28"/>
+    </symbol>
+
+    <symbol id="a3-status-paused" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="#f8f9f9" stroke="#738084" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="#738084"/>
+      <circle cx="60" cy="44" r="6" fill="#738084"/>
+      <rect x="81" y="65" width="8" height="28" rx="4" fill="#738084"/>
+      <rect x="96" y="65" width="8" height="28" rx="4" fill="#738084"/>
+    </symbol>
+
+    <symbol id="a3-status-offline" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="#f8f9f9" stroke="#8a9699" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="#8a9699"/>
+      <circle cx="60" cy="44" r="6" fill="#8a9699"/>
+      <circle cx="88" cy="80" r="14" fill="#8a9699"/>
+      <path d="M28 102L106 24" stroke="#8a9699" stroke-width="10" stroke-linecap="round"/>
+    </symbol>
+
+    <symbol id="a3-template-normal" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="none" stroke="currentColor" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="currentColor"/>
+      <circle cx="60" cy="44" r="6" fill="currentColor"/>
+      <circle cx="88" cy="80" r="14" fill="currentColor"/>
+    </symbol>
+
+    <symbol id="a3-template-scanning" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="none" stroke="currentColor" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="currentColor"/>
+      <circle cx="60" cy="44" r="6" fill="currentColor"/>
+      <circle cx="88" cy="80" r="14" fill="currentColor"/>
+      <path d="M28 30C48 14 86 15 104 33" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>
+    </symbol>
+
+    <symbol id="a3-template-warning" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="none" stroke="currentColor" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="currentColor"/>
+      <circle cx="60" cy="44" r="6" fill="currentColor"/>
+      <circle cx="88" cy="80" r="14" fill="currentColor"/>
+      <path d="M104 25L116 47H92L104 25Z" fill="currentColor"/>
+    </symbol>
+
+    <symbol id="a3-template-paused" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="none" stroke="currentColor" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="currentColor"/>
+      <circle cx="60" cy="44" r="6" fill="currentColor"/>
+      <rect x="81" y="65" width="8" height="28" rx="4" fill="currentColor"/>
+      <rect x="96" y="65" width="8" height="28" rx="4" fill="currentColor"/>
+    </symbol>
+
+    <symbol id="a3-template-offline" viewBox="0 0 128 128">
+      <rect x="14" y="18" width="100" height="92" rx="24" fill="none" stroke="currentColor" stroke-width="10"/>
+      <circle cx="42" cy="44" r="6" fill="currentColor"/>
+      <circle cx="60" cy="44" r="6" fill="currentColor"/>
+      <circle cx="88" cy="80" r="14" fill="currentColor"/>
+      <path d="M28 102L106 24" stroke="currentColor" stroke-width="10" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <rect class="bg" width="1800" height="1280"/>
+  <text x="64" y="82" class="title">A3 Monoline Window System</text>
+  <text x="64" y="122" class="subtitle">Menu-bar-first observer mark: rounded window, two quiet sensor dots, one status dot.</text>
+
+  <g id="asset-app-icon-normal" transform="translate(80 180)" filter="url(#softShadow)">
+    <rect x="0" y="0" width="420" height="420" rx="104" fill="url(#appTile)"/>
+    <rect x="48" y="62" width="324" height="296" rx="78" fill="#ffffff" stroke="#202d30" stroke-width="32"/>
+    <circle cx="150" cy="156" r="13" fill="#202d30"/>
+    <circle cx="190" cy="156" r="13" fill="#202d30"/>
+    <circle cx="286" cy="256" r="44" fill="#22b8a8"/>
+    <circle cx="303" cy="239" r="10" fill="#ffffff"/>
+  </g>
+
+  <g transform="translate(560 190)">
+    <text x="0" y="28" class="label">Core App Icon</text>
+    <text x="0" y="58" class="small">Kept deliberately quiet: strong outline, readable status dot, no eye/camera cue.</text>
+    <rect x="0" y="90" width="650" height="158" rx="28" fill="#ffffff" stroke="#dfe7e8" stroke-width="2"/>
+    <text x="28" y="134" class="label">Shape Contract</text>
+    <text x="28" y="168" class="small">The outer rounded window never changes. States only alter the accent dot,</text>
+    <text x="28" y="202" class="small">scan arc, badge, pause bars, or offline slash.</text>
+    <text x="28" y="236" class="small">This keeps dock icons, menu bar glyphs, and animations coherent.</text>
+  </g>
+
+  <g transform="translate(80 620)">
+    <text x="0" y="0" class="label">Status Variants</text>
+    <g transform="translate(0 40)" filter="url(#miniShadow)">
+      <use id="asset-status-normal" href="#a3-status-normal" width="128" height="128"/>
+    </g>
+    <g transform="translate(160 40)" filter="url(#miniShadow)">
+      <use id="asset-status-scanning" href="#a3-status-scanning" width="128" height="128"/>
+    </g>
+    <g transform="translate(320 40)" filter="url(#miniShadow)">
+      <use id="asset-status-minor" href="#a3-status-minor" width="128" height="128"/>
+    </g>
+    <g transform="translate(480 40)" filter="url(#miniShadow)">
+      <use id="asset-status-warning" href="#a3-status-warning" width="128" height="128"/>
+    </g>
+    <g transform="translate(640 40)" filter="url(#miniShadow)">
+      <use id="asset-status-critical" href="#a3-status-critical" width="128" height="128"/>
+    </g>
+    <g transform="translate(800 40)" filter="url(#miniShadow)">
+      <use id="asset-status-paused" href="#a3-status-paused" width="128" height="128"/>
+    </g>
+    <g transform="translate(960 40)" filter="url(#miniShadow)">
+      <use id="asset-status-offline" href="#a3-status-offline" width="128" height="128"/>
+    </g>
+    <g transform="translate(10 190)">
+      <text class="small" x="0" y="0">normal</text>
+      <text class="small" x="158" y="0">scanning</text>
+      <text class="small" x="330" y="0">minor</text>
+      <text class="small" x="486" y="0">warning</text>
+      <text class="small" x="646" y="0">critical</text>
+      <text class="small" x="812" y="0">paused</text>
+      <text class="small" x="974" y="0">offline</text>
+    </g>
+  </g>
+
+  <g transform="translate(80 900)">
+    <text x="0" y="0" class="label">Menu Bar Template Preview</text>
+    <text x="0" y="30" class="small">Template glyphs are monochrome; macOS can tint them while state color is reserved for richer UI contexts.</text>
+    <rect x="0" y="62" width="1120" height="88" rx="24" fill="#ffffff" stroke="#dfe7e8" stroke-width="2"/>
+    <g transform="translate(26 82)" style="color:#202d30">
+      <use href="#a3-template-normal" width="42" height="42"/>
+      <use href="#a3-template-scanning" x="78" width="42" height="42"/>
+      <use href="#a3-template-warning" x="156" width="42" height="42"/>
+      <use href="#a3-template-paused" x="234" width="42" height="42"/>
+      <use href="#a3-template-offline" x="312" width="42" height="42"/>
+    </g>
+    <g transform="translate(446 82)" style="color:#202d30">
+      <use href="#a3-template-normal" width="24" height="24"/>
+      <use href="#a3-template-scanning" x="54" width="24" height="24"/>
+      <use href="#a3-template-warning" x="108" width="24" height="24"/>
+      <use href="#a3-template-paused" x="162" width="24" height="24"/>
+      <use href="#a3-template-offline" x="216" width="24" height="24"/>
+    </g>
+    <rect x="0" y="180" width="1120" height="88" rx="24" fill="#1c2426"/>
+    <g transform="translate(26 200)" style="color:#f4f7f7">
+      <use href="#a3-template-normal" width="42" height="42"/>
+      <use href="#a3-template-scanning" x="78" width="42" height="42"/>
+      <use href="#a3-template-warning" x="156" width="42" height="42"/>
+      <use href="#a3-template-paused" x="234" width="42" height="42"/>
+      <use href="#a3-template-offline" x="312" width="42" height="42"/>
+    </g>
+    <g transform="translate(446 200)" style="color:#f4f7f7">
+      <use href="#a3-template-normal" width="24" height="24"/>
+      <use href="#a3-template-scanning" x="54" width="24" height="24"/>
+      <use href="#a3-template-warning" x="108" width="24" height="24"/>
+      <use href="#a3-template-paused" x="162" width="24" height="24"/>
+      <use href="#a3-template-offline" x="216" width="24" height="24"/>
+    </g>
+  </g>
+
+  <g transform="translate(1320 190)">
+    <rect class="panel" width="360" height="760" rx="30"/>
+    <text x="32" y="50" class="label">Tiny-Size Check</text>
+    <text x="32" y="84" class="small">16, 20, 24, 32 px render tests.</text>
+    <g transform="translate(48 132)">
+      <use href="#a3-status-normal" width="16" height="16"/>
+      <use href="#a3-status-scanning" x="50" width="16" height="16"/>
+      <use href="#a3-status-warning" x="100" width="16" height="16"/>
+      <use href="#a3-status-critical" x="150" width="16" height="16"/>
+      <use href="#a3-status-paused" x="200" width="16" height="16"/>
+      <use href="#a3-status-offline" x="250" width="16" height="16"/>
+      <text x="0" y="48" class="small">16 px</text>
+    </g>
+    <g transform="translate(48 224)">
+      <use href="#a3-status-normal" width="20" height="20"/>
+      <use href="#a3-status-scanning" x="50" width="20" height="20"/>
+      <use href="#a3-status-warning" x="100" width="20" height="20"/>
+      <use href="#a3-status-critical" x="150" width="20" height="20"/>
+      <use href="#a3-status-paused" x="200" width="20" height="20"/>
+      <use href="#a3-status-offline" x="250" width="20" height="20"/>
+      <text x="0" y="52" class="small">20 px</text>
+    </g>
+    <g transform="translate(48 320)">
+      <use href="#a3-status-normal" width="24" height="24"/>
+      <use href="#a3-status-scanning" x="50" width="24" height="24"/>
+      <use href="#a3-status-warning" x="100" width="24" height="24"/>
+      <use href="#a3-status-critical" x="150" width="24" height="24"/>
+      <use href="#a3-status-paused" x="200" width="24" height="24"/>
+      <use href="#a3-status-offline" x="250" width="24" height="24"/>
+      <text x="0" y="56" class="small">24 px</text>
+    </g>
+    <g transform="translate(48 424)">
+      <use href="#a3-status-normal" width="32" height="32"/>
+      <use href="#a3-status-scanning" x="50" width="32" height="32"/>
+      <use href="#a3-status-warning" x="100" width="32" height="32"/>
+      <use href="#a3-status-critical" x="150" width="32" height="32"/>
+      <use href="#a3-status-paused" x="200" width="32" height="32"/>
+      <use href="#a3-status-offline" x="250" width="32" height="32"/>
+      <text x="0" y="66" class="small">32 px</text>
+    </g>
+    <text x="32" y="610" class="small">Recommendation: keep the 16 px</text>
+    <text x="32" y="636" class="small">template monochrome, and use color</text>
+    <text x="32" y="662" class="small">states from 20 px upward.</text>
+  </g>
+</svg>

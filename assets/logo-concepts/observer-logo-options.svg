@@ -1,0 +1,219 @@
+<svg width="2400" height="1800" viewBox="0 0 2400 1800" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .bg { fill: #f4f6f6; }
+      .card { fill: #ffffff; stroke: #dfe6e6; stroke-width: 2; }
+      .ink { stroke: #203235; }
+      .title { fill: #17282c; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; font-size: 56px; font-weight: 760; letter-spacing: 0; }
+      .subtitle { fill: #617074; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-size: 26px; font-weight: 520; letter-spacing: 0; }
+      .name { fill: #203235; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-size: 34px; font-weight: 760; letter-spacing: 0; }
+      .caption { fill: #617074; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-size: 21px; font-weight: 520; letter-spacing: 0; }
+    </style>
+    <linearGradient id="tealBase" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#faffff"/>
+      <stop offset="0.55" stop-color="#dff7f3"/>
+      <stop offset="1" stop-color="#8ce1d4"/>
+    </linearGradient>
+    <linearGradient id="warmBase" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#fffefd"/>
+      <stop offset="0.52" stop-color="#e9f7f3"/>
+      <stop offset="1" stop-color="#ffd27d"/>
+    </linearGradient>
+    <linearGradient id="inkBase" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#ffffff"/>
+      <stop offset="0.5" stop-color="#e8f0ef"/>
+      <stop offset="1" stop-color="#9bd6cd"/>
+    </linearGradient>
+    <filter id="softShadow" x="-60" y="-40" width="520" height="540" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="24" stdDeviation="26" flood-color="#102A2D" flood-opacity="0.14"/>
+    </filter>
+    <filter id="tinyShadow" x="-20" y="-20" width="170" height="170" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#102A2D" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <rect class="bg" width="2400" height="1800"/>
+  <text x="96" y="108" class="title">观察者 Logo Directions</text>
+  <text x="96" y="154" class="subtitle">Four friendly product-icon systems for app icon, menu bar, and status changes.</text>
+
+  <g transform="translate(96 230)">
+    <rect class="card" width="1064" height="650" rx="34"/>
+    <text x="42" y="70" class="name">A. Little Observation Window</text>
+    <text x="42" y="110" class="caption">Most product-like. Rounded window + dot, excellent for menu bar states.</text>
+
+    <g transform="translate(88 156)" filter="url(#softShadow)">
+      <rect x="0" y="0" width="330" height="330" rx="86" fill="url(#tealBase)"/>
+      <rect x="22" y="22" width="286" height="286" rx="70" stroke="#fff" stroke-width="10" opacity="0.82"/>
+      <rect x="78" y="112" width="176" height="142" rx="48" fill="#f2fffd" stroke="#1e3437" stroke-width="15"/>
+      <path d="M96 139C122 109 186 101 235 132" stroke="#35cabb" stroke-width="17" stroke-linecap="round"/>
+      <circle cx="166" cy="179" r="40" fill="#28bcae"/>
+      <circle cx="183" cy="164" r="10" fill="#f7fffe"/>
+    </g>
+
+    <g transform="translate(510 190)">
+      <g filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="34" fill="#fff" stroke="#203235" stroke-width="10"/>
+        <circle cx="58" cy="54" r="20" fill="#28bcae"/>
+      </g>
+      <g transform="translate(124 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="34" fill="#fff" stroke="#203235" stroke-width="10"/>
+        <path d="M21 26C42 9 77 9 96 25" stroke="#2a9dff" stroke-width="10" stroke-linecap="round"/>
+        <circle cx="58" cy="54" r="19" fill="#2a9dff"/>
+      </g>
+      <g transform="translate(248 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="34" fill="#fff8eb" stroke="#203235" stroke-width="10"/>
+        <circle cx="58" cy="52" r="21" fill="#ff9d2f"/>
+        <path d="M96 10V34" stroke="#8f4800" stroke-width="9" stroke-linecap="round"/>
+        <circle cx="96" cy="50" r="5" fill="#8f4800"/>
+      </g>
+      <g transform="translate(372 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="34" fill="#fff3f1" stroke="#203235" stroke-width="10"/>
+        <path d="M17 21C38 5 80 5 100 21" stroke="#ff5c56" stroke-width="10" stroke-linecap="round"/>
+        <path d="M17 87C38 103 80 103 100 87" stroke="#ff5c56" stroke-width="10" stroke-linecap="round"/>
+        <circle cx="58" cy="54" r="21" fill="#ff5c56"/>
+      </g>
+      <g transform="translate(496 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="34" fill="#f7f8f8" stroke="#6f7c80" stroke-width="10"/>
+        <rect x="46" y="36" width="9" height="36" rx="4.5" fill="#6f7c80"/>
+        <rect x="62" y="36" width="9" height="36" rx="4.5" fill="#6f7c80"/>
+      </g>
+    </g>
+  </g>
+
+  <g transform="translate(1240 230)">
+    <rect class="card" width="1064" height="650" rx="34"/>
+    <text x="42" y="70" class="name">B. Radar Eye</text>
+    <text x="42" y="110" class="caption">More dynamic. Good for scan animation and active monitoring feedback.</text>
+
+    <g transform="translate(88 156)" filter="url(#softShadow)">
+      <rect x="0" y="0" width="330" height="330" rx="86" fill="#f8fbfb"/>
+      <circle cx="165" cy="165" r="112" fill="#ecfffc" stroke="#203235" stroke-width="16"/>
+      <path d="M165 55A110 110 0 0 1 275 165" stroke="#2a9dff" stroke-width="18" stroke-linecap="round"/>
+      <path d="M71 222A110 110 0 0 1 165 55" stroke="#35cabb" stroke-width="18" stroke-linecap="round"/>
+      <circle cx="165" cy="165" r="42" fill="#22b8a8"/>
+      <path d="M165 165L238 104" stroke="#203235" stroke-width="12" stroke-linecap="round" opacity="0.72"/>
+      <circle cx="238" cy="104" r="18" fill="#ffc247"/>
+    </g>
+
+    <g transform="translate(510 190)">
+      <g filter="url(#tinyShadow)">
+        <circle cx="58" cy="54" r="50" fill="#fff" stroke="#203235" stroke-width="10"/>
+        <circle cx="58" cy="54" r="18" fill="#28bcae"/>
+      </g>
+      <g transform="translate(124 0)" filter="url(#tinyShadow)">
+        <circle cx="58" cy="54" r="50" fill="#fff" stroke="#203235" stroke-width="10"/>
+        <path d="M58 8A46 46 0 0 1 104 54" stroke="#2a9dff" stroke-width="10" stroke-linecap="round"/>
+        <circle cx="58" cy="54" r="17" fill="#2a9dff"/>
+      </g>
+      <g transform="translate(248 0)" filter="url(#tinyShadow)">
+        <circle cx="58" cy="54" r="50" fill="#fff8eb" stroke="#203235" stroke-width="10"/>
+        <circle cx="58" cy="54" r="18" fill="#ff9d2f"/>
+        <circle cx="96" cy="18" r="13" fill="#ffc247" stroke="#fff" stroke-width="5"/>
+      </g>
+      <g transform="translate(372 0)" filter="url(#tinyShadow)">
+        <circle cx="58" cy="54" r="50" fill="#fff3f1" stroke="#203235" stroke-width="10"/>
+        <path d="M23 19A50 50 0 0 1 93 19" stroke="#ff5c56" stroke-width="10" stroke-linecap="round"/>
+        <path d="M23 89A50 50 0 0 0 93 89" stroke="#ff5c56" stroke-width="10" stroke-linecap="round"/>
+        <circle cx="58" cy="54" r="19" fill="#ff5c56"/>
+      </g>
+      <g transform="translate(496 0)" filter="url(#tinyShadow)">
+        <circle cx="58" cy="54" r="50" fill="#f7f8f8" stroke="#6f7c80" stroke-width="10"/>
+        <path d="M26 88L90 20" stroke="#6f7c80" stroke-width="10" stroke-linecap="round"/>
+      </g>
+    </g>
+  </g>
+
+  <g transform="translate(96 980)">
+    <rect class="card" width="1064" height="650" rx="34"/>
+    <text x="42" y="70" class="name">C. Tiny Observer Face</text>
+    <text x="42" y="110" class="caption">Friendliest. More personality, still restrained enough for a utility product.</text>
+
+    <g transform="translate(88 156)" filter="url(#softShadow)">
+      <rect x="0" y="0" width="330" height="330" rx="86" fill="url(#warmBase)"/>
+      <rect x="70" y="104" width="190" height="158" rx="60" fill="#fff" stroke="#203235" stroke-width="16"/>
+      <circle cx="132" cy="173" r="27" fill="#28bcae"/>
+      <circle cx="197" cy="173" r="27" fill="#203235"/>
+      <circle cx="206" cy="162" r="8" fill="#fff"/>
+      <path d="M131 229C151 247 180 247 200 229" stroke="#ff9d2f" stroke-width="13" stroke-linecap="round"/>
+      <path d="M108 126C124 110 151 108 168 123" stroke="#35cabb" stroke-width="13" stroke-linecap="round"/>
+    </g>
+
+    <g transform="translate(510 190)">
+      <g filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="38" fill="#fff" stroke="#203235" stroke-width="10"/>
+        <circle cx="45" cy="52" r="14" fill="#28bcae"/>
+        <circle cx="72" cy="52" r="14" fill="#203235"/>
+      </g>
+      <g transform="translate(124 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="38" fill="#fff" stroke="#203235" stroke-width="10"/>
+        <path d="M24 26C44 11 75 11 94 26" stroke="#2a9dff" stroke-width="10" stroke-linecap="round"/>
+        <circle cx="45" cy="54" r="14" fill="#2a9dff"/>
+        <circle cx="72" cy="54" r="14" fill="#203235"/>
+      </g>
+      <g transform="translate(248 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="38" fill="#fff8eb" stroke="#203235" stroke-width="10"/>
+        <path d="M36 72C50 58 68 58 82 72" stroke="#ff9d2f" stroke-width="10" stroke-linecap="round"/>
+        <circle cx="45" cy="47" r="14" fill="#ff9d2f"/>
+        <path d="M92 12V36" stroke="#8f4800" stroke-width="9" stroke-linecap="round"/>
+      </g>
+      <g transform="translate(372 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="38" fill="#fff3f1" stroke="#203235" stroke-width="10"/>
+        <path d="M22 24C42 13 75 13 96 24" stroke="#ff5c56" stroke-width="10" stroke-linecap="round"/>
+        <circle cx="45" cy="54" r="15" fill="#ff5c56"/>
+        <circle cx="75" cy="54" r="15" fill="#ff5c56"/>
+      </g>
+      <g transform="translate(496 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="38" fill="#f7f8f8" stroke="#6f7c80" stroke-width="10"/>
+        <rect x="43" y="36" width="9" height="34" rx="4.5" fill="#6f7c80"/>
+        <rect x="64" y="36" width="9" height="34" rx="4.5" fill="#6f7c80"/>
+      </g>
+    </g>
+  </g>
+
+  <g transform="translate(1240 980)">
+    <rect class="card" width="1064" height="650" rx="34"/>
+    <text x="42" y="70" class="name">D. Abstract “观” Mark</text>
+    <text x="42" y="110" class="caption">Most Chinese and distinctive. Less cute, more brandable and ownable.</text>
+
+    <g transform="translate(88 156)" filter="url(#softShadow)">
+      <rect x="0" y="0" width="330" height="330" rx="86" fill="url(#inkBase)"/>
+      <path d="M92 95H227" stroke="#203235" stroke-width="20" stroke-linecap="round"/>
+      <path d="M112 95V222C112 244 128 258 150 258H224" stroke="#203235" stroke-width="20" stroke-linecap="round"/>
+      <path d="M220 95V207" stroke="#203235" stroke-width="20" stroke-linecap="round"/>
+      <path d="M151 152H260" stroke="#35cabb" stroke-width="18" stroke-linecap="round"/>
+      <circle cx="190" cy="190" r="36" fill="#28bcae"/>
+      <circle cx="204" cy="176" r="9" fill="#f6fffe"/>
+    </g>
+
+    <g transform="translate(510 190)">
+      <g filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="34" fill="#fff" stroke="#203235" stroke-width="10"/>
+        <path d="M31 29H86M40 29V77H86M84 29V72" stroke="#203235" stroke-width="8" stroke-linecap="round"/>
+        <circle cx="61" cy="58" r="14" fill="#28bcae"/>
+      </g>
+      <g transform="translate(124 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="34" fill="#fff" stroke="#203235" stroke-width="10"/>
+        <path d="M26 23C46 9 76 9 95 23" stroke="#2a9dff" stroke-width="10" stroke-linecap="round"/>
+        <path d="M35 34H84M43 34V78H84" stroke="#203235" stroke-width="8" stroke-linecap="round"/>
+        <circle cx="61" cy="58" r="14" fill="#2a9dff"/>
+      </g>
+      <g transform="translate(248 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="34" fill="#fff8eb" stroke="#203235" stroke-width="10"/>
+        <path d="M33 29H78M42 29V78H79" stroke="#203235" stroke-width="8" stroke-linecap="round"/>
+        <circle cx="58" cy="56" r="14" fill="#ff9d2f"/>
+        <circle cx="94" cy="20" r="13" fill="#ffc247" stroke="#fff" stroke-width="5"/>
+      </g>
+      <g transform="translate(372 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="34" fill="#fff3f1" stroke="#203235" stroke-width="10"/>
+        <path d="M18 22C37 8 78 8 98 22" stroke="#ff5c56" stroke-width="10" stroke-linecap="round"/>
+        <path d="M33 31H78M42 31V78H79" stroke="#203235" stroke-width="8" stroke-linecap="round"/>
+        <circle cx="58" cy="56" r="14" fill="#ff5c56"/>
+      </g>
+      <g transform="translate(496 0)" filter="url(#tinyShadow)">
+        <rect x="0" y="0" width="116" height="108" rx="34" fill="#f7f8f8" stroke="#6f7c80" stroke-width="10"/>
+        <path d="M34 29H80M42 29V78H79" stroke="#6f7c80" stroke-width="8" stroke-linecap="round"/>
+        <path d="M28 86L88 24" stroke="#6f7c80" stroke-width="10" stroke-linecap="round"/>
+      </g>
+    </g>
+  </g>
+</svg>

@@ -127,10 +127,6 @@ impl AppSettings {
         })
     }
 
-    pub fn context_watch_percent(&self) -> f64 {
-        (self.context_warning_percent - 15.0).clamp(50.0, self.context_warning_percent)
-    }
-
     pub fn is_pro(&self) -> bool {
         self.plan == "pro"
     }
@@ -434,16 +430,6 @@ mod tests {
         assert!(settings.hides_session("secret-app", "/Users/test/secret-app"));
         assert!(settings.hides_session("frontend", "/TMP/ARCHIVE/frontend"));
         assert!(!settings.hides_session("frontend", "/Users/test/frontend"));
-    }
-
-    #[test]
-    fn context_watch_threshold_stays_below_warning() {
-        let settings = AppSettings {
-            context_warning_percent: 85.0,
-            ..AppSettings::default()
-        };
-
-        assert_eq!(settings.context_watch_percent(), 70.0);
     }
 
     #[test]
