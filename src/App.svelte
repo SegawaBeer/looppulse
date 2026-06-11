@@ -667,6 +667,13 @@
     settingsFeedbackTone = tone;
   }
 
+  function clearScopedFeedback(scope: SettingsFeedbackScope) {
+    if (settingsFeedbackScope === scope) {
+      settingsFeedback = "";
+    }
+    upgradePrompt = "";
+  }
+
   function requirePro(feature: string, scope: SettingsFeedbackScope = "general"): boolean {
     if (isProPlan()) return true;
     upgradePrompt = `${feature} 属于 Pro 能力`;
@@ -679,6 +686,7 @@
     settings.plan = plan;
     await saveSettings();
     if (plan === "pro") upgradePrompt = "";
+    if (plan === "pro") showSettingsFeedback("Pro 开发模式已启用，完整诊断能力已解锁。", "general", "ok");
     notificationStatus = plan === "pro" ? "已切换到 Pro 开发模式" : "已切换到免费版";
   }
 
@@ -1289,11 +1297,13 @@
 
   function setCooldown(minutes: number) {
     settings.cooldownMinutes = minutes;
+    showSettingsFeedback(`重复提醒间隔已设为 ${minutes} 分钟。`, "alerts", "ok");
     void saveSettings();
   }
 
   function setRefreshInterval(seconds: number) {
     settings.refreshIntervalSeconds = seconds;
+    showSettingsFeedback(`监控刷新频率已设为 ${seconds} 秒。`, "general", "ok");
     void saveSettings();
   }
 
@@ -1325,8 +1335,12 @@
     const exists = settings.enabledAgents.some((enabled) => enabled === agent);
     if (exists && settings.enabledAgents.length > 1) {
       settings.enabledAgents = settings.enabledAgents.filter((enabled) => enabled !== agent);
+      showSettingsFeedback(`${agent} 采集已暂停。`, "general", "ok");
     } else if (!exists) {
       settings.enabledAgents = [...settings.enabledAgents, agent];
+      showSettingsFeedback(`${agent} 采集已开启。`, "general", "ok");
+    } else {
+      showSettingsFeedback("至少保留一种 Agent 采集。", "general", "warning");
     }
     void saveSettings();
   }
@@ -1340,6 +1354,7 @@
     if (!value) return;
     settings.hiddenProjects = dedupeStrings([...settings.hiddenProjects, value]);
     hiddenProjectDraft = "";
+    showSettingsFeedback("隐藏规则已添加。", "privacy", "ok");
     void saveSettings();
   }
 
@@ -1356,6 +1371,7 @@
       settings.opencodeDataRoots = dedupeStrings([...settings.opencodeDataRoots, value]);
       opencodeRootDraft = "";
     }
+    showSettingsFeedback("数据目录已添加。", "general", "ok");
     void saveSettings();
   }
 
@@ -1419,6 +1435,7 @@
 
   function removeHiddenProject(rule: string) {
     settings.hiddenProjects = settings.hiddenProjects.filter((item) => item !== rule);
+    showSettingsFeedback("隐藏规则已移除。", "privacy", "ok");
     void saveSettings();
   }
 
@@ -3461,7 +3478,10 @@
             role="tab"
             aria-selected={settingsTab === tab.key}
             class:active={settingsTab === tab.key}
-            onclick={() => settingsTab = tab.key}
+            onclick={() => {
+              settingsTab = tab.key;
+              clearScopedFeedback(tab.key === "data" ? "general" : tab.key);
+            }}
           >
             <strong>{tab.label}</strong>
             <span>{tab.hint}</span>
@@ -3567,7 +3587,17 @@
         </div>
       </div>
 
-      <div class={`settings-section pro-setting-block${isProPlan() ? "" : " locked-block"}`}>
+      <div
+        class={`settings-section pro-setting-block${isProPlan() ? "" : " locked-block"}`}
+      >
+        {#if !isProPlan()}
+          <button
+            type="button"
+            class="locked-block-overlay"
+            aria-label="告警阈值细调属于 Pro 能力"
+            onclick={() => requirePro("告警阈值细调", "alerts")}
+          ></button>
+        {/if}
         <div class="settings-section-title">
           <span>告警阈值</span>
           <em>{isProPlan() ? "Pro 已解锁" : "Pro 可细调"}</em>
@@ -3579,13 +3609,18 @@
               type="number"
               min="3"
               max="120"
+              disabled={!isProPlan()}
               bind:value={settings.stalledWarningMinutes}
               onchange={() => setStalledWarning(settings.stalledWarningMinutes)}
             />
           </label>
           <label>
             <span>累计用量</span>
-            <select bind:value={settings.tokenWarningThreshold} onchange={() => setTokenThreshold(settings.tokenWarningThreshold)}>
+            <select
+              disabled={!isProPlan()}
+              bind:value={settings.tokenWarningThreshold}
+              onchange={() => setTokenThreshold(settings.tokenWarningThreshold)}
+            >
               <option value={500000}>500k</option>
               <option value={1000000}>1M</option>
               <option value={3000000}>3M</option>
@@ -3765,7 +3800,11 @@
           <p class="settings-note compact-note">当前按 30 天策略预览；调整保留时间和导出历史属于 Pro 能力。</p>
         {/if}
         <div class="history-action-row">
-          <button onclick={copyEventHistoryExport}>复制导出</button>
+          <button
+            class:pro-action={!isProPlan()}
+            title={isProPlan() ? "复制事件历史导出" : "Pro 可导出事件历史"}
+            onclick={copyEventHistoryExport}
+          >复制导出</button>
           <button class="danger-action" onclick={clearEventHistory}>清空历史</button>
         </div>
       </div>
@@ -3827,7 +3866,10 @@
         </div>
         <div class="history-action-row">
           <button onclick={copyRemotePreviewExport}>复制预览</button>
-          <button onclick={() => setPathDisplayMode("private", "remote")}>使用脱敏</button>
+          <button
+            class:active-action={settings.pathDisplayMode === "private"}
+            onclick={() => setPathDisplayMode("private", "remote")}
+          >使用脱敏</button>
         </div>
       </div>
       {/if}
@@ -5519,7 +5561,15 @@
   .footer-btn:focus-visible,
   .mini-button:focus-visible,
   .view-toggle button:focus-visible,
-  .segmented button:focus-visible {
+  .segmented button:focus-visible,
+  .settings-tabs button:focus-visible,
+  .agent-toggle-row button:focus-visible,
+  .history-action-row button:focus-visible,
+  .remote-field-grid button:focus-visible,
+  .hidden-input-row button:focus-visible,
+  .statusline-box button:focus-visible,
+  .test-notification-btn:focus-visible,
+  .pro-setting-block:focus-visible {
     outline: 1px solid rgba(78, 202, 255, 0.72);
     outline-offset: 2px;
   }
@@ -6149,14 +6199,15 @@
 
   .detail-actions {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 5px;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 6px;
     padding-bottom: 2px;
   }
 
   .detail-actions button {
     appearance: none;
-    height: 30px;
+    min-width: 0;
+    height: 29px;
     border-radius: 7px;
     border: 0.5px solid rgba(255, 255, 255, 0.10);
     background: rgba(255, 255, 255, 0.075);
@@ -6167,6 +6218,11 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    grid-column: span 2;
+  }
+
+  .detail-actions button:nth-last-child(-n + 2) {
+    grid-column: span 3;
   }
 
   .detail-actions button:hover {
@@ -6231,6 +6287,7 @@
 
   .agent-name {
     min-width: 0;
+    flex: 1 1 auto;
     font-size: 12.5px;
     font-weight: 600;
     color: rgba(255, 255, 255, 0.95);
@@ -6341,14 +6398,15 @@
 
   .agent-chip {
     color: rgba(255, 255, 255, 0.58);
-    max-width: 86px;
+    max-width: 78px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .model-chip {
     color: rgba(255, 255, 255, 0.62);
-    max-width: 128px;
+    flex: 1 1 auto;
+    max-width: none;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -6364,7 +6422,7 @@
 
   .permission-count-chip {
     color: rgba(255, 255, 255, 0.46);
-    max-width: 92px;
+    max-width: 86px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
@@ -6633,6 +6691,12 @@
     text-align: center;
   }
 
+  .settings-tabs button:hover {
+    border-color: var(--obs-border-strong);
+    background: var(--obs-surface-hover);
+    color: var(--obs-text-primary);
+  }
+
   .settings-tabs button.active {
     color: var(--obs-text-primary);
     border-color: var(--obs-status-info-border);
@@ -6710,6 +6774,12 @@
     text-overflow: ellipsis;
   }
 
+  .agent-toggle-row button:hover {
+    border-color: var(--obs-border-strong);
+    background: var(--obs-surface-hover);
+    color: var(--obs-text-primary);
+  }
+
   .agent-toggle-row button.active {
     color: var(--obs-text-solid);
     border-color: var(--obs-status-info-border);
@@ -6777,6 +6847,15 @@
     font-size: 10px;
     cursor: pointer;
     white-space: nowrap;
+  }
+
+  .plan-card button:hover,
+  .mini-button:hover,
+  .hidden-input-row button:hover,
+  .statusline-box button:not(:disabled):hover {
+    border-color: rgba(78, 202, 255, 0.34);
+    background: rgba(78, 202, 255, 0.16);
+    color: rgba(255, 255, 255, 0.88);
   }
 
   .upgrade-note {
@@ -6914,10 +6993,38 @@
     position: relative;
   }
 
+  .locked-block {
+    cursor: pointer;
+    border-radius: 8px;
+  }
+
+  .locked-block-overlay {
+    appearance: none;
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+  }
+
   .locked-block input,
   .locked-block select,
   .locked-control input {
     opacity: 0.52;
+    cursor: pointer;
+  }
+
+  .locked-block:hover .threshold-grid label,
+  .locked-control:hover {
+    border-color: rgba(255, 195, 77, 0.18);
+    background: rgba(255, 195, 77, 0.065);
+  }
+
+  .locked-block-overlay:focus-visible {
+    outline: 1px solid rgba(255, 195, 77, 0.72);
+    outline-offset: 2px;
   }
 
   .threshold-grid {
@@ -6955,6 +7062,13 @@
     font: inherit;
     font-size: 10px;
     outline: none;
+  }
+
+  .threshold-grid input:disabled,
+  .threshold-grid select:disabled {
+    color: rgba(255, 255, 255, 0.42);
+    cursor: pointer;
+    -webkit-text-fill-color: rgba(255, 255, 255, 0.42);
   }
 
   .threshold-grid input,
@@ -7112,6 +7226,12 @@
     text-overflow: ellipsis;
   }
 
+  .remote-field-grid button:hover {
+    border-color: rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.085);
+    color: rgba(255, 255, 255, 0.66);
+  }
+
   .remote-field-grid button.active {
     color: rgba(255, 255, 255, 0.88);
     border-color: rgba(78, 202, 255, 0.28);
@@ -7123,9 +7243,15 @@
   }
 
   .remote-field-grid button.locked-field {
-    border-color: rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.045);
-    color: rgba(255, 255, 255, 0.30);
+    border-color: rgba(255, 195, 77, 0.13);
+    background: rgba(255, 195, 77, 0.055);
+    color: rgba(255, 235, 196, 0.52);
+  }
+
+  .remote-field-grid button.locked-field:hover {
+    border-color: rgba(255, 195, 77, 0.28);
+    background: rgba(255, 195, 77, 0.10);
+    color: rgba(255, 242, 216, 0.82);
   }
 
   .remote-field-grid button.locked-field::after {
@@ -7184,9 +7310,38 @@
     cursor: pointer;
   }
 
+  .history-action-row button:hover {
+    border-color: rgba(78, 202, 255, 0.34);
+    background: rgba(78, 202, 255, 0.15);
+    color: rgba(255, 255, 255, 0.88);
+  }
+
+  .history-action-row button.pro-action {
+    border-color: rgba(255, 195, 77, 0.20);
+    background: rgba(255, 195, 77, 0.075);
+    color: rgba(255, 235, 196, 0.72);
+  }
+
+  .history-action-row button.pro-action::after {
+    content: " Pro";
+    font-size: 8px;
+    color: rgba(255, 195, 77, 0.82);
+  }
+
+  .history-action-row button.active-action {
+    border-color: rgba(76, 212, 160, 0.26);
+    background: rgba(76, 212, 160, 0.11);
+    color: rgba(225, 255, 244, 0.82);
+  }
+
   .history-action-row .danger-action {
     border-color: rgba(255, 92, 122, 0.24);
     background: rgba(255, 92, 122, 0.10);
+  }
+
+  .history-action-row .danger-action:hover {
+    border-color: rgba(255, 92, 122, 0.36);
+    background: rgba(255, 92, 122, 0.15);
   }
 
   .cooldown-row {
@@ -7251,15 +7406,26 @@
     border-color: rgba(78, 202, 255, 0.35);
   }
 
+  .segmented button:hover {
+    color: rgba(255, 255, 255, 0.82);
+    background: rgba(255, 255, 255, 0.11);
+  }
+
   .locked-segmented button {
-    color: rgba(255, 255, 255, 0.42);
-    border-color: rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.055);
+    color: rgba(255, 235, 196, 0.54);
+    border-color: rgba(255, 195, 77, 0.13);
+    background: rgba(255, 195, 77, 0.055);
   }
 
   .locked-segmented button.active {
-    color: rgba(255, 255, 255, 0.72);
+    color: rgba(255, 242, 216, 0.82);
     border-color: rgba(255, 195, 77, 0.26);
     background: rgba(255, 195, 77, 0.11);
+  }
+
+  .locked-segmented button:hover {
+    color: rgba(255, 242, 216, 0.86);
+    border-color: rgba(255, 195, 77, 0.28);
+    background: rgba(255, 195, 77, 0.10);
   }
 </style>
