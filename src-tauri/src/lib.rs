@@ -420,8 +420,9 @@ fn focus_agent(
     cwd: String,
     project_name: String,
     pid: Option<u32>,
+    child_pids: Option<Vec<u32>>,
 ) -> Result<String, String> {
-    focus::focus_agent_window(&agent_type, &cwd, &project_name, pid)
+    focus::focus_agent_window(&agent_type, &cwd, &project_name, pid, child_pids)
 }
 
 #[tauri::command]

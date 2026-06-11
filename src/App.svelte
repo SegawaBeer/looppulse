@@ -2407,7 +2407,8 @@
         agentType: session.agent_type,
         cwd: session.cwd,
         projectName: session.project_name,
-        pid: session.pid
+        pid: session.pid,
+        childPids: (session.children ?? []).map((child) => child.pid)
       });
       notificationStatus = message;
     } catch (error) {
