@@ -33,6 +33,7 @@
 - 2026-06-07 验证：`pnpm build`、`pnpm tauri build --debug`、`cargo fmt --check`、`cargo test`（39 passed）、`git diff --check` 均通过；debug app 已重新打包并启动。截图工具会触发 nonactivating panel 的全局点击收起，因此打开态视觉截图不作为自动验收依据，日志确认 `visible=true` 和副屏 frame 正常。
 - 2026-06-07 完整测试轮次：完成机器侧完整测试，覆盖前端构建、Rust 格式、Rust 单测、diff 空白检查、debug app/dmg 打包、debug app 重启、native status item/event tap 安装、monitor snapshot、状态图标更新和副屏状态项点击定位。当前仅保留已知 deprecated warnings：`NSStatusItem::setTarget/setAction`、`NSApplication::activateIgnoringOtherApps`。
 - 2026-06-11 稳定点：完成 Agent 深度采集、风险/权限观察、Bevel 风格主面板优化、卡片/简表聚焦入口、CleanMyMac 风格面板开合动效和正式菜单栏图标替换；菜单栏图标改为 44x44 Retina 模板资源并关闭按钮自动缩放，提升与微信/输入法等原生状态栏图标的清晰度一致性。验证通过 `pnpm build`、`cargo fmt --check`、`cargo test`（51 passed）、`git diff --check`、`pnpm tauri build --debug`，debug app 已重启到 `/tmp/ObserverDebugRun/观察者.app`。
+- 2026-06-11 体验收尾：统一呼吸灯/方块矩阵的告警优先颜色语义，黄色/红色告警不再显示绿色信号灯；“聚焦”增强为 TTY + 主/子进程 cwd + Terminal/iTerm 窗口/标签/session 名 + 终端内容多信号匹配；补充复杂多显示器纯函数测试，覆盖右侧、上方、下方副屏和窄可见区域定位。
 
 ---
 
@@ -164,7 +165,7 @@ block2 = "0.6"
 - [x] abtop 细度对齐第二阶段：新增 `MonitorSnapshot` 全局监控快照；会话可携带子进程树、子进程端口、Claude subagents、Claude memory 状态；端口归属从主进程扩展到子/孙进程，新增端口冲突、空闲后残留子进程、orphan port tracker；非侵入式读取 Claude `abtop-rate-limits.json` 和 Codex rollout rate_limits；检测 `codex mcp-server` 并展示 active/total rollout；小面板详情、完整视图、诊断摘要和远程预览均接入这些深度信号。
 - [x] abtop 细度对齐第三阶段：Codex collector 排除 `codex mcp-server` PID 和 MCP-owned rollout，减少 phantom/重复会话；工具调用新增错误分类（rate_limit / permission / timeout / exit_code / error）并在诊断摘要和工具 timeline 展示；设置里新增 Claude StatusLine 状态检测和手动安装入口，不覆盖已有第三方 statusLine；全局通知新增孤儿端口、端口冲突和 quota 接近耗尽。
 - [x] abtop 细度对齐第四阶段：新增低敏会话摘要 `conversation_summary`；Claude/Codex/OpenCode 只采集阶段、turn 计数、工具计数、字数/图片数等元信息，不暴露 prompt、消息正文或文件内容；小面板、完整视图、复制诊断和远程预览均接入安全摘要。
-- [ ] 会话操作后续：进一步用 shell cwd / 子进程树 / tab title 多信号提高无 TTY 场景下的命中率。
+- [x] 会话操作后续：进一步用 shell cwd / 子进程树 / tab title 多信号提高无 TTY 场景下的命中率。
 - [x] 通知点击定位兜底链路：由于当前 macOS/Tauri notification 插件未暴露 `register_listener` 命令，新增后端 pending notification target、App 激活监听、panel focus/panel-shown 消费兜底；通知点击后即使插件 action listener 不可用，也会唤起面板并定位会话详情。
 - [x] OpenCode 深采集增强：OpenCode collector 改为 schema-aware 查询；补充 tool timeline、文件访问、session summary diff、token turn history、context history、压缩计数、reasoning/text/step/error/rate-limit 等信号；不读取账号 token 表，不暴露消息正文。
 - [x] Orphan port 可操作清理：全局系统信号和会话详情中新增孤儿端口“清理”动作；后端清理前重新确认目标仍是当前快照里的 orphan port 且 PID 仍监听该端口，先 SIGTERM，必要时支持 force SIGKILL。
@@ -175,7 +176,7 @@ block2 = "0.6"
 - [ ] Agent 支持后续：在对标 abtop 的 Claude/Codex/OpenCode 颗粒度稳定后，再增加更多国内 Agent / 大模型 CLI 的 collector。
 - [ ] 设置项后续：远程同步开关、同步字段确认流程
 - [ ] 付费体系后续：功能基本完成后再接入真实 License / 支付校验、试用期、升级页文案和远程同步权益。
-- [ ] 继续验证复杂多显示器布局（上下排列、不同缩放比例）
+- [x] 继续验证复杂多显示器布局（上下排列、不同缩放比例）
 - [x] Agent 状态变化通知（已引入 `tauri-plugin-notification`，前端已接入风险/完成提醒、冷却和开关设置）
 - [ ] 提供 dmg 打包 + 签名 / 公证流程
 

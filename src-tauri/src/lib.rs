@@ -2137,6 +2137,23 @@ fn panel_log(message: &str) {
 mod panel_position_tests {
     use super::*;
 
+    fn visible_panel_rect(placement: AppKitPlacement) -> AppKitRect {
+        AppKitRect {
+            x: placement.x + PANEL_GUTTER_LEFT,
+            y: placement.y + PANEL_GUTTER_BOTTOM,
+            width: PANEL_WIDTH,
+            height: PANEL_HEIGHT,
+        }
+    }
+
+    fn assert_visible_panel_inside(placement: AppKitPlacement, visible: AppKitRect) {
+        let panel = visible_panel_rect(placement);
+        assert!(panel.x >= visible.x + PANEL_EDGE_MARGIN);
+        assert!(panel.max_x() <= visible.max_x() - PANEL_EDGE_MARGIN);
+        assert!(panel.y >= visible.y + PANEL_EDGE_MARGIN);
+        assert!(panel.max_y() <= visible.max_y());
+    }
+
     #[test]
     fn appkit_placement_uses_upper_secondary_screen() {
         let screen = AppKitRect {
@@ -2164,6 +2181,64 @@ mod panel_position_tests {
         assert_eq!(placement.y, 1504.0);
         assert_eq!(placement.width, 590.0);
         assert_eq!(placement.height, 504.0);
+    }
+
+    #[test]
+    fn appkit_placement_uses_right_secondary_screen_visible_area() {
+        let screen = AppKitRect {
+            x: 1470.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let visible = AppKitRect {
+            x: 1470.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1055.0,
+        };
+        let anchor = AppKitRect {
+            x: 3248.0,
+            y: 1054.0,
+            width: 32.0,
+            height: 22.0,
+        };
+
+        let placement = appkit_panel_placement_for_rects(anchor, screen, visible);
+        let panel = visible_panel_rect(placement);
+
+        assert_eq!(panel.max_x(), visible.max_x() - PANEL_EDGE_MARGIN);
+        assert_eq!(panel.max_y(), anchor.y - PANEL_TOP_GAP);
+        assert_visible_panel_inside(placement, visible);
+    }
+
+    #[test]
+    fn appkit_placement_uses_lower_secondary_screen_menu_bar() {
+        let screen = AppKitRect {
+            x: 0.0,
+            y: -1080.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let visible = AppKitRect {
+            x: 0.0,
+            y: -1080.0,
+            width: 1920.0,
+            height: 1055.0,
+        };
+        let anchor = AppKitRect {
+            x: 1720.0,
+            y: -28.0,
+            width: 32.0,
+            height: 22.0,
+        };
+
+        let placement = appkit_panel_placement_for_rects(anchor, screen, visible);
+        let panel = visible_panel_rect(placement);
+
+        assert_eq!(panel.max_x(), visible.max_x() - PANEL_EDGE_MARGIN);
+        assert_eq!(panel.max_y(), anchor.y - PANEL_TOP_GAP);
+        assert_visible_panel_inside(placement, visible);
     }
 
     #[test]
@@ -2217,5 +2292,40 @@ mod panel_position_tests {
         let placement = appkit_panel_placement_for_rects(anchor, screen, visible);
 
         assert_eq!(placement.y, 10.0);
+    }
+
+    #[test]
+    fn appkit_placement_handles_visible_area_narrower_than_panel() {
+        let screen = AppKitRect {
+            x: 0.0,
+            y: 0.0,
+            width: 390.0,
+            height: 844.0,
+        };
+        let visible = AppKitRect {
+            x: 40.0,
+            y: 0.0,
+            width: 320.0,
+            height: 820.0,
+        };
+        let anchor = AppKitRect {
+            x: 300.0,
+            y: 796.0,
+            width: 32.0,
+            height: 22.0,
+        };
+
+        let placement = appkit_panel_placement_for_rects(anchor, screen, visible);
+        let panel = visible_panel_rect(placement);
+
+        assert_eq!(panel.x, visible.x + PANEL_EDGE_MARGIN);
+        assert_eq!(
+            placement.width,
+            PANEL_WIDTH + PANEL_GUTTER_LEFT + PANEL_GUTTER_RIGHT
+        );
+        assert_eq!(
+            placement.height,
+            PANEL_HEIGHT + PANEL_GUTTER_TOP + PANEL_GUTTER_BOTTOM
+        );
     }
 }

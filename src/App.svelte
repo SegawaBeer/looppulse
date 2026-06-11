@@ -1411,6 +1411,10 @@
     return Boolean(option?.free || isProPlan());
   }
 
+  function remoteFieldSelectedButLocked(field: string): boolean {
+    return remoteFieldEnabled(field) && !remoteFieldAvailable(field);
+  }
+
   function toggleRemoteField(field: string) {
     const option = remoteFieldOptions.find((item) => item.key === field);
     if (!option) return;
@@ -1847,6 +1851,16 @@
     if (wasActive(session.status)) return "work";
     if (["waiting", "idle"].includes(session.status)) return "ok";
     return "idle";
+  }
+
+  function signalColorForSession(session: AgentSession): string {
+    if (session.risk_level === "critical" || ["error", "rate_limited", "stalled"].includes(session.status)) {
+      return riskColor("critical");
+    }
+    if (session.risk_level === "warning" || session.status === "waiting_approval") {
+      return riskColor("warning");
+    }
+    return statusColor(session.status);
   }
 
   function pulseToneLabel(tone: ReturnType<typeof pulseToneForSession>): string {
@@ -2571,7 +2585,7 @@
       return {
         key: `${sessionKey(session, index)}:signal`,
         active: true,
-        color: statusColor(session.status),
+        color: signalColorForSession(session),
         tone: pulseToneForSession(session),
         label: `${sessionTitle(session)} · ${livenessLabel(session)}`,
         delay: index * 70
@@ -2735,7 +2749,7 @@
                   <span>{agentDisplayLabel(session)} · {modelBadgeLabel(session)}</span>
                 </div>
                 <div class="session-cell-status">
-                  <i style="background:{statusColor(session.status)}"></i>
+                  <i style="background:{signalColorForSession(session)}"></i>
                   <span>{statusLabel(session.status)}</span>
                   <em>{lastActivityLabel(session)}</em>
                 </div>
@@ -3325,8 +3339,8 @@
           >
             <div class="compact-main">
               <span class={`status-dot pulse-${pulseToneForSession(session)}`}
-                style="background:{statusColor(session.status)};
-                       box-shadow:0 0 5px {statusColor(session.status)}66">
+                style="background:{signalColorForSession(session)};
+                       box-shadow:0 0 5px {signalColorForSession(session)}66">
               </span>
               <div class="compact-title">
                 <div class="compact-title-line">
@@ -3372,8 +3386,8 @@
           <div class="card-top">
             <div class="agent-left">
               <span class={`status-dot pulse-${pulseToneForSession(session)}`}
-                style="background:{statusColor(session.status)};
-                       box-shadow:0 0 5px {statusColor(session.status)}66">
+                style="background:{signalColorForSession(session)};
+                       box-shadow:0 0 5px {signalColorForSession(session)}66">
               </span>
               <span class="agent-name">{session.project_name || session.agent_type}</span>
               <span class={`model-icon ${modelToneClass(session)}`} title={modelBadgeLabel(session)}>{modelInitial(session)}</span>
@@ -3848,6 +3862,7 @@
               class:active={remoteFieldEnabled(option.key) && remoteFieldAvailable(option.key)}
               class:pro-field={!option.free}
               class:locked-field={!option.free && !isProPlan()}
+              class:selected-locked-field={remoteFieldSelectedButLocked(option.key)}
               aria-disabled={!option.free && !isProPlan()}
               title={!option.free && !isProPlan() ? `${option.label}字段属于 Pro 远程预览` : `${option.label}字段`}
               onclick={() => toggleRemoteField(option.key)}
@@ -7259,10 +7274,22 @@
     color: rgba(255, 235, 196, 0.52);
   }
 
+  .remote-field-grid button.selected-locked-field {
+    color: rgba(238, 252, 255, 0.88);
+    border-color: rgba(78, 202, 255, 0.30);
+    background: linear-gradient(180deg, rgba(78, 202, 255, 0.18), rgba(78, 202, 255, 0.10));
+  }
+
   .remote-field-grid button.locked-field:hover {
     border-color: rgba(255, 195, 77, 0.28);
     background: rgba(255, 195, 77, 0.10);
     color: rgba(255, 242, 216, 0.82);
+  }
+
+  .remote-field-grid button.selected-locked-field:hover {
+    color: rgba(238, 252, 255, 0.92);
+    border-color: rgba(78, 202, 255, 0.38);
+    background: linear-gradient(180deg, rgba(78, 202, 255, 0.22), rgba(78, 202, 255, 0.13));
   }
 
   .remote-field-grid button.locked-field::after {

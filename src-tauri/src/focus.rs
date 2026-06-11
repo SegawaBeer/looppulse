@@ -1,7 +1,8 @@
-use std::process::Stdio;
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 const OSASCRIPT_TIMEOUT: Duration = Duration::from_millis(2_500);
+const PROCESS_LOOKUP_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub fn focus_agent_window(
     agent_type: &str,
@@ -10,7 +11,13 @@ pub fn focus_agent_window(
     pid: Option<u32>,
     child_pids: Option<Vec<u32>>,
 ) -> Result<String, String> {
-    let target = FocusTarget::new(cwd, project_name, tty_candidates(pid, child_pids));
+    let pids = focus_pids(pid, child_pids);
+    let target = FocusTarget::new(
+        cwd,
+        project_name,
+        tty_candidates(&pids),
+        process_cwds(&pids),
+    );
 
     for tty in &target.ttys {
         if run_focus_script("Terminal", &terminal_focus_script(&target, Some(tty))).is_ok() {
@@ -52,18 +59,29 @@ struct FocusTarget {
 }
 
 impl FocusTarget {
-    fn new(cwd: &str, project_name: &str, ttys: Vec<String>) -> Self {
-        Self {
-            terms: focus_terms(cwd, project_name),
-            ttys,
+    fn new(cwd: &str, project_name: &str, ttys: Vec<String>, process_cwds: Vec<String>) -> Self {
+        let mut terms = focus_terms(cwd, project_name);
+        for cwd in process_cwds {
+            push_path_terms(&mut terms, &cwd);
         }
+        Self { terms, ttys }
     }
 }
 
-fn tty_candidates(pid: Option<u32>, child_pids: Option<Vec<u32>>) -> Vec<String> {
-    let mut candidates = Vec::new();
+fn focus_pids(pid: Option<u32>, child_pids: Option<Vec<u32>>) -> Vec<u32> {
+    let mut pids = Vec::new();
     for pid in pid.into_iter().chain(child_pids.unwrap_or_default()) {
-        if let Some(tty) = process_tty(pid) {
+        if pid > 0 && !pids.contains(&pid) {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+fn tty_candidates(pids: &[u32]) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for pid in pids {
+        if let Some(tty) = process_tty(*pid) {
             push_unique(&mut candidates, tty);
         }
     }
@@ -76,13 +94,7 @@ fn focus_terms(cwd: &str, project_name: &str) -> Vec<String> {
     let project_name = project_name.trim();
 
     if !cwd.is_empty() {
-        push_unique(&mut terms, cwd.to_string());
-        if let Some(short) = home_short_path(cwd) {
-            push_unique(&mut terms, short);
-        }
-        for suffix in path_suffixes(cwd) {
-            push_unique(&mut terms, suffix);
-        }
+        push_path_terms(&mut terms, cwd);
     }
 
     if !project_name.is_empty() && !is_temporary_chat_name(project_name) {
@@ -90,6 +102,26 @@ fn focus_terms(cwd: &str, project_name: &str) -> Vec<String> {
     }
 
     terms
+}
+
+fn process_cwds(pids: &[u32]) -> Vec<String> {
+    let mut cwds = Vec::new();
+    for pid in pids.iter().take(16) {
+        if let Some(cwd) = process_cwd(*pid) {
+            push_unique(&mut cwds, cwd);
+        }
+    }
+    cwds
+}
+
+fn push_path_terms(terms: &mut Vec<String>, path: &str) {
+    push_unique(terms, path.to_string());
+    if let Some(short) = home_short_path(path) {
+        push_unique(terms, short);
+    }
+    for suffix in path_suffixes(path) {
+        push_unique(terms, suffix);
+    }
 }
 
 fn path_suffixes(path: &str) -> Vec<String> {
@@ -137,14 +169,29 @@ fn focus_application(app_name: &str) -> Result<(), String> {
 }
 
 fn process_tty(pid: u32) -> Option<String> {
-    let output = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "tty="])
-        .output()
-        .ok()?;
+    let mut command = Command::new("ps");
+    command.args(["-p", &pid.to_string(), "-o", "tty="]);
+    let output = command_output_with_timeout(command, PROCESS_LOOKUP_TIMEOUT).ok()?;
     if !output.status.success() {
         return None;
     }
     normalize_tty(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn process_cwd(pid: u32) -> Option<String> {
+    let mut command = Command::new("lsof");
+    command.args(["-F", "n", "-a", "-p", &pid.to_string(), "-d", "cwd"]);
+    let output = command_output_with_timeout(command, PROCESS_LOOKUP_TIMEOUT).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix('n'))
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+        .map(ToString::to_string)
 }
 
 fn normalize_tty(raw: &str) -> Option<String> {
@@ -203,9 +250,31 @@ fn terminal_focus_script(target: &FocusTarget, tty: Option<&str>) -> String {
       on error
         set tabTitle to ""
       end try
-      set tabText to contents of t
+      try
+        set tabName to name of t
+      on error
+        set tabName to ""
+      end try
+      try
+        set windowName to name of w
+      on error
+        set windowName to ""
+      end try
       repeat with targetTerm in targetTerms
-        if targetTerm is not "" and (tabText contains targetTerm or tabTitle contains targetTerm) then
+        if targetTerm is not "" and (tabTitle contains targetTerm or tabName contains targetTerm or windowName contains targetTerm) then
+          set selected tab of w to t
+          set index of w to 1
+          activate
+          return
+        end if
+      end repeat
+      try
+        set tabText to contents of t
+      on error
+        set tabText to ""
+      end try
+      repeat with targetTerm in targetTerms
+        if targetTerm is not "" and tabText contains targetTerm then
           set selected tab of w to t
           set index of w to 1
           activate
@@ -228,7 +297,17 @@ fn iterm_focus_script(target: &FocusTarget, tty: Option<&str>) -> String {
   set targetTerms to {{{}}}
   set targetTty to "{}"
   repeat with w in windows
+    try
+      set windowName to name of w
+    on error
+      set windowName to ""
+    end try
     repeat with t in tabs of w
+      try
+        set tabName to name of t
+      on error
+        set tabName to ""
+      end try
       repeat with s in sessions of t
         try
           set sessionTty to tty of s
@@ -246,9 +325,21 @@ fn iterm_focus_script(target: &FocusTarget, tty: Option<&str>) -> String {
         on error
           set sessionName to ""
         end try
-        set sessionText to contents of s
         repeat with targetTerm in targetTerms
-          if targetTerm is not "" and (sessionText contains targetTerm or sessionName contains targetTerm) then
+          if targetTerm is not "" and (sessionName contains targetTerm or tabName contains targetTerm or windowName contains targetTerm) then
+            select t
+            select w
+            activate
+            return
+          end if
+        end repeat
+        try
+          set sessionText to contents of s
+        on error
+          set sessionText to ""
+        end try
+        repeat with targetTerm in targetTerms
+          if targetTerm is not "" and sessionText contains targetTerm then
             select t
             select w
             activate
@@ -276,8 +367,28 @@ fn run_osascript(script: &str) -> Result<(), String> {
     run_osascript_with_output(script).map(|_| ())
 }
 
+fn command_output_with_timeout(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
+    command.stdin(Stdio::null());
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let started_at = Instant::now();
+
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output();
+        }
+        if started_at.elapsed() >= timeout {
+            let _ = child.kill();
+            return child.wait_with_output();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn run_osascript_with_output(script: &str) -> Result<String, String> {
-    let mut child = std::process::Command::new("osascript")
+    let mut child = Command::new("osascript")
         .arg("-e")
         .arg(script)
         .stdout(Stdio::piped())
@@ -321,7 +432,7 @@ mod tests {
 
     #[test]
     fn terminal_script_contains_path_and_project() {
-        let target = FocusTarget::new("/Users/test/my app", "my app", vec![]);
+        let target = FocusTarget::new("/Users/test/my app", "my app", vec![], vec![]);
         let script = terminal_focus_script(&target, None);
 
         assert!(script.contains("/Users/test/my app"));
@@ -333,11 +444,33 @@ mod tests {
 
     #[test]
     fn terminal_script_prefers_tty_when_present() {
-        let target = FocusTarget::new("/Users/test/project", "project", vec![]);
+        let target = FocusTarget::new("/Users/test/project", "project", vec![], vec![]);
         let script = terminal_focus_script(&target, Some("ttys003"));
 
         assert!(script.contains("set targetTty to \"ttys003\""));
         assert!(script.contains("tabTty contains targetTty"));
+    }
+
+    #[test]
+    fn focus_target_adds_process_cwd_suffixes() {
+        let target = FocusTarget::new(
+            "/Users/test/workspace/root",
+            "root",
+            vec![],
+            vec!["/Users/test/workspace/root/packages/web".to_string()],
+        );
+
+        assert!(target
+            .terms
+            .contains(&"/Users/test/workspace/root/packages/web".to_string()));
+        assert!(target.terms.contains(&"root/packages/web".to_string()));
+        assert!(target.terms.contains(&"packages/web".to_string()));
+        assert!(target.terms.contains(&"web".to_string()));
+    }
+
+    #[test]
+    fn focus_pids_dedupes_parent_and_children() {
+        assert_eq!(focus_pids(Some(42), Some(vec![42, 7, 7, 0])), vec![42, 7]);
     }
 
     #[test]
