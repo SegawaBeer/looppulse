@@ -222,7 +222,7 @@ fn normalize_path_display_mode(mode: &str) -> String {
 }
 
 fn normalize_remote_preview_fields(fields: Vec<String>) -> Vec<String> {
-    let allowed = default_remote_preview_fields();
+    let allowed = allowed_remote_preview_fields();
     let mut next = Vec::new();
     for field in fields {
         let field = field.trim();
@@ -285,6 +285,19 @@ fn default_plan() -> String {
 
 fn default_path_display_mode() -> String {
     "compact".to_string()
+}
+
+fn allowed_remote_preview_fields() -> Vec<String> {
+    vec![
+        "identity".to_string(),
+        "status".to_string(),
+        "risk".to_string(),
+        "tokens".to_string(),
+        "context".to_string(),
+        "path".to_string(),
+        "environment".to_string(),
+        "timeline".to_string(),
+    ]
 }
 
 fn default_remote_preview_fields() -> Vec<String> {
@@ -492,5 +505,24 @@ mod tests {
             settings.remote_preview_fields,
             default_remote_preview_fields()
         );
+    }
+
+    #[test]
+    fn remote_preview_fields_allow_locked_pro_timeline_selection() {
+        let settings = AppSettings {
+            remote_preview_fields: vec![
+                "status".to_string(),
+                "timeline".to_string(),
+                "environment".to_string(),
+            ],
+            ..AppSettings::default()
+        }
+        .normalized();
+
+        assert_eq!(
+            settings.remote_preview_fields,
+            vec!["status", "timeline", "environment"]
+        );
+        assert!(!default_remote_preview_fields().contains(&"timeline".to_string()));
     }
 }

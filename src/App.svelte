@@ -1418,14 +1418,20 @@
   function toggleRemoteField(field: string) {
     const option = remoteFieldOptions.find((item) => item.key === field);
     if (!option) return;
-    if (!option.free && !requirePro(`${option.label}远程字段`, "remote")) return;
+    const locked = !option.free && !isProPlan();
 
     if (remoteFieldEnabled(field)) {
       settings.remotePreviewFields = settings.remotePreviewFields.filter((item) => item !== field);
       showSettingsFeedback(`${option.label}已从远程预览中移除。`, "remote", "ok");
     } else {
       settings.remotePreviewFields = normalizeRemotePreviewFields([...settings.remotePreviewFields, field]);
-      showSettingsFeedback(`${option.label}已加入远程预览。`, "remote", "ok");
+      showSettingsFeedback(
+        locked
+          ? `${option.label}已加入预览选择，升级 Pro 后会包含在远程数据中。`
+          : `${option.label}已加入远程预览。`,
+        "remote",
+        locked ? "warning" : "ok"
+      );
     }
     void saveSettings();
   }
