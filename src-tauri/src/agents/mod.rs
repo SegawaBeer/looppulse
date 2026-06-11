@@ -249,6 +249,7 @@ fn title_for_phase(phase: &str) -> Option<String> {
         "completed" | "task_complete" | "done" => "任务已完成",
         "error" => "检测到错误",
         "rate_limited" => "等待额度恢复",
+        "waiting_approval" => "等待你确认",
         "thinking" => "思考中",
         "executing" | "busy" => "执行中",
         "waiting" | "idle" => "等待用户输入",
@@ -516,7 +517,6 @@ pub fn collect_monitor_snapshot(settings: &AppSettings) -> MonitorSnapshot {
         );
     }
 
-    let mut git_cache = HashMap::new();
     let mut port_cache = HashMap::new();
     let mut all: Vec<_> = all
         .into_iter()
@@ -526,7 +526,6 @@ pub fn collect_monitor_snapshot(settings: &AppSettings) -> MonitorSnapshot {
                 session,
                 &processes,
                 &children_map,
-                &mut git_cache,
                 &mut port_cache,
                 settings,
             )
@@ -604,6 +603,49 @@ pub fn process_snapshot() -> HashMap<u32, ProcessInfo> {
         .collect()
 }
 
+pub(crate) fn live_pid_cwds(live_pids: &[u32]) -> Vec<(u32, String)> {
+    live_pids
+        .iter()
+        .filter_map(|pid| process_cwd(*pid).map(|cwd| (*pid, cwd)))
+        .collect()
+}
+
+pub(crate) fn pid_for_cwd(cwd: &str, live_pid_cwds: &[(u32, String)]) -> Option<u32> {
+    let normalized_cwd = normalize_path_for_match(cwd)?;
+    live_pid_cwds
+        .iter()
+        .find(|(_, process_cwd)| {
+            normalize_path_for_match(process_cwd)
+                .is_some_and(|candidate| candidate == normalized_cwd)
+        })
+        .map(|(pid, _)| *pid)
+}
+
+fn process_cwd(pid: u32) -> Option<String> {
+    let mut command = Command::new("lsof");
+    command.args(["-F", "n", "-a", "-p", &pid.to_string(), "-d", "cwd"]);
+    let output = command_output_with_timeout(command, Duration::from_millis(500)).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix('n'))
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalize_path_for_match(path: &str) -> Option<String> {
+    let trimmed = path.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn parse_process_line(line: &str) -> Option<ProcessInfo> {
     let mut parts = line.trim_start().split_whitespace();
     let pid = parts.next()?.parse().ok()?;
@@ -638,13 +680,33 @@ pub fn now_seconds() -> i64 {
         .as_secs() as i64
 }
 
-pub fn project_name(cwd: &str) -> String {
-    cwd.trim_end_matches('/')
+pub fn project_name_with_fallback(cwd: &str, fallback: &str) -> String {
+    let name = cwd
+        .trim_end_matches('/')
         .rsplit('/')
         .next()
         .filter(|name| !name.is_empty())
-        .unwrap_or("Unknown")
-        .to_string()
+        .unwrap_or(fallback);
+    normalize_project_display_name(name, fallback)
+}
+
+pub fn normalize_project_display_name(name: &str, fallback: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || is_technical_workspace_name(trimmed) {
+        return fallback.to_string();
+    }
+    trimmed.to_string()
+}
+
+fn is_technical_workspace_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "unknown"
+        || lower == "tmp"
+        || lower == "temp"
+        || lower == "temporary"
+        || lower.starts_with("files-mentioned-by-the-user")
+        || lower.starts_with("uploaded-files")
+        || lower.starts_with("codex-clipboard")
 }
 
 pub fn base_capabilities() -> SessionCapabilities {
@@ -675,14 +737,9 @@ fn finalize_session(
     mut session: AgentSession,
     processes: &HashMap<u32, ProcessInfo>,
     children_map: &HashMap<u32, Vec<u32>>,
-    git_cache: &mut HashMap<String, Option<GitInfo>>,
     port_cache: &mut HashMap<u32, Vec<PortInfo>>,
     settings: &AppSettings,
 ) -> AgentSession {
-    session.git = git_cache
-        .entry(session.cwd.clone())
-        .or_insert_with(|| git_info(&session.cwd))
-        .clone();
     if let Some(pid) = session.pid {
         session.children = collect_child_processes(pid, processes, children_map, port_cache);
         session.ports = collect_session_ports(pid, &session.children, port_cache);
@@ -799,10 +856,7 @@ fn derive_permission_observations(session: &AgentSession) -> Vec<PermissionObser
                 },
                 level: if file_write { "medium" } else { "low" }.to_string(),
                 scope: "当前工程目录".to_string(),
-                evidence: format!(
-                    "最近记录到 {} 次文件访问。",
-                    session.file_accesses.len()
-                ),
+                evidence: format!("最近记录到 {} 次文件访问。", session.file_accesses.len()),
                 source: "file_access".to_string(),
                 last_seen_at: session.conversation_summary.last_signal_at,
             },
@@ -883,7 +937,8 @@ fn insert_permission_observation(
 ) {
     match by_key.get(&observation.key) {
         Some(existing)
-            if permission_level_rank(&existing.level) > permission_level_rank(&observation.level)
+            if permission_level_rank(&existing.level)
+                > permission_level_rank(&observation.level)
                 || existing.last_seen_at >= observation.last_seen_at =>
         {
             return;
@@ -945,7 +1000,8 @@ fn display_tool_name(name: &str) -> String {
         "读取终端输出".to_string()
     } else if is_shell_tool(&lower) {
         "执行终端命令".to_string()
-    } else if lower.contains("browser") || lower.contains("chrome") || lower.contains("playwright") {
+    } else if lower.contains("browser") || lower.contains("chrome") || lower.contains("playwright")
+    {
         "使用浏览器工具".to_string()
     } else if lower.contains("websearch") || lower.contains("web_search") {
         "搜索网页".to_string()
@@ -1089,79 +1145,6 @@ fn summarize_command(command: &str) -> String {
     } else {
         format!("{}...", normalized.chars().take(177).collect::<String>())
     }
-}
-
-fn git_info(cwd: &str) -> Option<GitInfo> {
-    if cwd.trim().is_empty() || !Path::new(cwd).exists() {
-        return None;
-    }
-
-    let branch = run_git(cwd, &["branch", "--show-current"]).and_then(|value| {
-        let value = value.trim().to_string();
-        if value.is_empty() {
-            run_git(cwd, &["rev-parse", "--short", "HEAD"])
-                .map(|head| format!("detached {}", head.trim()))
-        } else {
-            Some(value)
-        }
-    })?;
-
-    let porcelain = run_git(cwd, &["status", "--porcelain=v1", "-uno"]).unwrap_or_default();
-    let changed_files = porcelain
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count() as u32;
-
-    let upstream = run_git(
-        cwd,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-    );
-    let (ahead, behind) = upstream
-        .as_deref()
-        .and_then(|upstream| {
-            let upstream = upstream.trim();
-            if upstream.is_empty() {
-                return None;
-            }
-            run_git(
-                cwd,
-                &[
-                    "rev-list",
-                    "--left-right",
-                    "--count",
-                    &format!("HEAD...{upstream}"),
-                ],
-            )
-        })
-        .and_then(|counts| {
-            let mut parts = counts.split_whitespace();
-            Some((
-                parts.next()?.parse::<u32>().ok()?,
-                parts.next()?.parse::<u32>().ok()?,
-            ))
-        })
-        .unwrap_or((0, 0));
-
-    Some(GitInfo {
-        branch,
-        is_dirty: changed_files > 0,
-        changed_files,
-        ahead,
-        behind,
-    })
-}
-
-fn run_git(cwd: &str, args: &[&str]) -> Option<String> {
-    let mut command = Command::new("git");
-    command
-        .args(["-c", "core.fsmonitor=false"])
-        .args(args)
-        .current_dir(cwd);
-    let output = command_output_with_timeout(command, Duration::from_millis(900)).ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn port_snapshot(pid: u32) -> Vec<PortInfo> {
@@ -1850,6 +1833,25 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
         ));
     }
 
+    if session.status == "waiting_approval" {
+        risks.push(risk(
+            "waiting_approval",
+            "warning",
+            "等待你确认",
+            "Agent 已停在需要用户决策或授权的节点，并非执行错误。",
+            &format!(
+                "当前任务：{}；最近活动：{}。",
+                session.current_task.as_deref().unwrap_or("等待用户确认"),
+                format_duration_minutes(inactive_secs)
+            ),
+            "打开对应 Agent，确认计划、回答问题或处理权限请求后再继续。",
+            "agent_status",
+            "high",
+            Some("waiting_for_user".to_string()),
+            false,
+        ));
+    }
+
     if session.status == "error" {
         let latest_error = session
             .tool_calls
@@ -1865,7 +1867,9 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
                     call.duration_ms
                 )
             })
-            .unwrap_or_else(|| "会话状态为 error；最近记录包含 error/failed/timeout 信号。".to_string());
+            .unwrap_or_else(|| {
+                "会话状态为 error；最近记录包含 error/failed/timeout 信号。".to_string()
+            });
         let raw_code = latest_error
             .and_then(|call| call.error_kind.clone())
             .or_else(|| Some("session_error".to_string()));
@@ -1893,10 +1897,7 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
             "info",
             "工程改动较多",
             "当前项目有较多未提交改动，继续运行前建议关注 Git 状态。",
-            &format!(
-                "分支：{}；改动文件：{}。",
-                git.branch, git.changed_files
-            ),
+            &format!("分支：{}；改动文件：{}。", git.branch, git.changed_files),
             "确认是否需要提交、暂存或备份当前改动。",
             "git_status",
             "high",
@@ -2018,6 +2019,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn project_name_hides_technical_workspace_names() {
+        assert_eq!(
+            project_name_with_fallback(
+                "/Users/test/Documents/Codex/2026-06-11/files-mentioned-by-the-user-5why",
+                "临时对话"
+            ),
+            "临时对话"
+        );
+        assert_eq!(project_name_with_fallback("/tmp", "临时对话"), "临时对话");
+        assert_eq!(
+            project_name_with_fallback("/Users/test/workspace", "临时对话"),
+            "workspace"
+        );
+        assert_eq!(
+            normalize_project_display_name("uploaded-files-123", "临时对话"),
+            "临时对话"
+        );
+    }
+
+    #[test]
     fn context_values_do_not_create_alerts() {
         let settings = AppSettings::default();
         let mut session = sample_session();
@@ -2082,6 +2103,24 @@ mod tests {
     }
 
     #[test]
+    fn waiting_approval_is_actionable_warning_not_error() {
+        let settings = AppSettings::default();
+        let mut session = sample_session();
+        session.status = "waiting_approval".to_string();
+        session.current_task = Some("等待你确认计划".to_string());
+
+        let risks = derive_risks(&session, &settings);
+        let risk = risks
+            .iter()
+            .find(|risk| risk.kind == "waiting_approval")
+            .unwrap();
+
+        assert_eq!(risk.severity, "warning");
+        assert_eq!(risk.title, "等待你确认");
+        assert!(!risks.iter().any(|risk| risk.kind == "error"));
+    }
+
+    #[test]
     fn git_dirty_heavy_is_pro_info_signal() {
         let settings = AppSettings::default();
         let mut session = sample_session();
@@ -2130,7 +2169,6 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &mut HashMap::new(),
-            &mut HashMap::new(),
             &settings,
         );
 
@@ -2151,7 +2189,6 @@ mod tests {
             session,
             &HashMap::new(),
             &HashMap::new(),
-            &mut HashMap::new(),
             &mut HashMap::new(),
             &settings,
         );
@@ -2190,6 +2227,19 @@ mod tests {
             process.command,
             "/usr/local/bin/codex --project /Users/test/app"
         );
+    }
+
+    #[test]
+    fn pid_for_cwd_requires_exact_worktree_match() {
+        let live = vec![
+            (10, "/Users/test/project-a".to_string()),
+            (11, "/Users/test/project-b/".to_string()),
+        ];
+
+        assert_eq!(pid_for_cwd("/Users/test/project-a", &live), Some(10));
+        assert_eq!(pid_for_cwd("/Users/test/project-b", &live), Some(11));
+        assert_eq!(pid_for_cwd("/Users/test/project", &live), None);
+        assert_eq!(pid_for_cwd("", &live), None);
     }
 
     #[test]

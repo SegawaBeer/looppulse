@@ -13,12 +13,12 @@ use settings::AppSettings;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::{
-    atomic::{AtomicU64, AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
     Arc, Mutex, OnceLock,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use system_notification::WorkspaceListener;
-use tauri::{Emitter, Listener, Manager, PhysicalPosition, PhysicalSize};
+use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
 use tauri_nspanel::{CollectionBehavior, ManagerExt, Panel, PanelLevel, WebviewWindowExt};
 
 const PANEL_EDGE_MARGIN: f64 = 10.0;
@@ -31,11 +31,23 @@ const PANEL_GUTTER_RIGHT: f64 = 100.0;
 const PANEL_GUTTER_TOP: f64 = 10.0;
 const PANEL_GUTTER_BOTTOM: f64 = 80.0;
 const PANEL_CLICK_GUARD_MS: u64 = 250;
-const PANEL_TRAY_DEBOUNCE_MS: u64 = 180;
-const STATUS_ITEM_WIDTH: f64 = 28.0;
+const PANEL_TRAY_DEBOUNCE_MS: u64 = 220;
+const PANEL_TRAY_RECLICK_GRACE_MS: u64 = 220;
+const PANEL_SHOW_ANIMATION_PRIME_MS: u64 = 34;
+const PANEL_HIDE_ANIMATION_FALLBACK_MS: u64 = 720;
+const PANEL_HIDE_DUPLICATE_GUARD_MS: u64 = 620;
+const PANEL_AFTER_HIDE_EVENT_TAP_SUPPRESS_MS: u64 = 700;
+const PANEL_EVENT_TAP_AFTER_NATIVE_SUPPRESS_MS: u64 = 2_400;
+const STATUS_ITEM_WIDTH: f64 = 32.0;
 const PANEL_LOG_PATH: &str = "/tmp/observer-panel.log";
 
 static LAST_TRAY_TOGGLE_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_NATIVE_OR_LOCAL_TRAY_TOGGLE_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_PANEL_SHOW_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_PANEL_HIDE_FINISH_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_PANEL_HIDE_REQUEST_MS: AtomicU64 = AtomicU64::new(0);
+static PANEL_HIDE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static PANEL_VISIBILITY_TOKEN: AtomicU64 = AtomicU64::new(0);
 static LAST_TRAY_HEALTH_STATE: AtomicU8 = AtomicU8::new(TrayHealthState::Unknown as u8);
 static NATIVE_STATUS_ITEM: OnceLock<usize> = OnceLock::new();
 static NATIVE_STATUS_BUTTON: OnceLock<usize> = OnceLock::new();
@@ -302,6 +314,20 @@ fn get_claude_statusline_status() -> claude_statusline::ClaudeStatusLineStatus {
 #[tauri::command]
 fn install_claude_statusline() -> Result<claude_statusline::ClaudeStatusLineStatus, String> {
     claude_statusline::install()
+}
+
+#[tauri::command]
+fn finish_panel_hide(app_handle: tauri::AppHandle, token: u64) -> Result<(), String> {
+    let panel = app_handle
+        .get_webview_panel("panel")
+        .map_err(|error| format!("{error:?}"))?;
+    finish_hide_panel(
+        app_handle,
+        panel,
+        "frontend-animation-complete".to_string(),
+        token,
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -624,6 +650,7 @@ pub fn run() {
             open_project,
             open_terminal,
             panel_ready,
+            finish_panel_hide,
             cleanup_orphan_port,
             record_notification_target,
             save_settings,
@@ -703,22 +730,13 @@ fn setup_panel(app_handle: &tauri::AppHandle) {
         ));
     }
 
-    // Hide panel whenever it loses key window status (covers clicking desktop + other apps)
-    let resign_handle = app_handle.clone();
+    // Resign events can be fired by AppKit during focus/menubar bookkeeping. Actual dismissal is
+    // handled by explicit tray toggles, outside clicks, transparent-gutter clicks, and space changes.
     let handler = ObserverPanelHandler::new();
     handler.window_did_resign_key(move |_| {
-        panel_log("panel event: did resign key");
-        let _ = resign_handle.emit("panel_did_resign_key", ());
+        panel_log("panel event: did resign key ignored");
     });
     panel.set_event_handler(Some(handler.as_ref()));
-
-    let listen_handle = app_handle.clone();
-    app_handle.listen("panel_did_resign_key", move |_| {
-        if let Ok(panel) = listen_handle.get_webview_panel("panel") {
-            panel_log("listener: panel_did_resign_key -> hide");
-            panel.hide();
-        }
-    });
 
     // Hide on space switch
     app_handle.listen_workspace(
@@ -790,12 +808,20 @@ fn setup_status_event_tap(app_handle: tauri::AppHandle) {
 }
 
 fn handle_status_event_tap_click(app_handle: tauri::AppHandle, quartz_x: f64, quartz_y: f64) {
+    if now_millis().saturating_sub(LAST_NATIVE_OR_LOCAL_TRAY_TOGGLE_MS.load(Ordering::Relaxed))
+        < PANEL_EVENT_TAP_AFTER_NATIVE_SUPPRESS_MS
+    {
+        panel_log("event tap: skipped after native/local tray event");
+        return;
+    }
+
     let mouse = objc2_app_kit::NSEvent::mouseLocation();
+    let event_point = appkit_point_from_quartz_point(quartz_x, quartz_y).unwrap_or(mouse);
     let debug_index = EVENT_TAP_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed);
     if debug_index < 8 {
         panel_log(&format!(
-            "event tap: left down quartz=({:.1},{:.1}) appkit_mouse=({:.1},{:.1})",
-            quartz_x, quartz_y, mouse.x, mouse.y
+            "event tap: left down quartz=({:.1},{:.1}) event=({:.1},{:.1}) current=({:.1},{:.1})",
+            quartz_x, quartz_y, event_point.x, event_point.y, mouse.x, mouse.y
         ));
     }
 
@@ -805,15 +831,18 @@ fn handle_status_event_tap_click(app_handle: tauri::AppHandle, quartz_x: f64, qu
     let Some(anchor) = appkit_anchor_from_rect(rect) else {
         return;
     };
-    let Some(hit_anchor) = appkit_status_button_anchor_for_mouse_quiet(anchor, mouse.x, mouse.y)
+    let Some(hit_anchor) =
+        appkit_status_button_anchor_for_mouse_quiet(anchor, event_point.x, event_point.y)
     else {
         return;
     };
 
     panel_log(&format!(
-        "event tap: status hit quartz=({:.1},{:.1}) mouse=({:.1},{:.1}) rect=({:.1},{:.1},{:.1},{:.1})",
+        "event tap: status hit quartz=({:.1},{:.1}) event=({:.1},{:.1}) current=({:.1},{:.1}) rect=({:.1},{:.1},{:.1},{:.1})",
         quartz_x,
         quartz_y,
+        event_point.x,
+        event_point.y,
         mouse.x,
         mouse.y,
         hit_anchor.rect.x,
@@ -881,7 +910,7 @@ fn setup_click_monitors(app_handle: tauri::AppHandle, click_guard: Arc<AtomicU64
             if let Ok(panel) = app_handle.get_webview_panel("panel") {
                 if panel.is_visible() {
                     panel_log("global click: visible -> hide");
-                    panel.hide();
+                    hide_panel(&app_handle, &panel, "global-click");
                 } else {
                     panel_log("global click: panel already hidden");
                 }
@@ -971,11 +1000,15 @@ fn configure_native_status_button(button: &objc2_app_kit::NSButton) {
     button.setBordered(false);
     button.setTransparent(false);
     button.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
+    button.setImageScaling(objc2_app_kit::NSImageScaling::ScaleNone);
     button.setToolTip(Some(&objc2_foundation::NSString::from_str("观察者")));
 }
 
-fn apply_tray_health_state(_app_handle: &tauri::AppHandle, state: TrayHealthState, tooltip: &str) {
+fn apply_tray_health_state(app_handle: &tauri::AppHandle, state: TrayHealthState, tooltip: &str) {
     if apply_native_status_health_state(state, tooltip) {
+        if let Ok(panel) = app_handle.get_webview_panel("panel") {
+            set_native_status_highlighted(panel.is_visible());
+        }
         panel_log(&format!("tray health: updated native state={state:?}"));
         return;
     }
@@ -1002,8 +1035,8 @@ fn apply_native_status_health_state(state: TrayHealthState, tooltip: &str) -> bo
 
     image.setTemplate(true);
     image.setSize(objc2_foundation::NSSize {
-        width: 18.0,
-        height: 18.0,
+        width: 22.0,
+        height: 22.0,
     });
     if let Some(button) = status_item.button(mtm) {
         status_item.setLength(STATUS_ITEM_WIDTH);
@@ -1027,6 +1060,18 @@ fn apply_native_status_health_state(state: TrayHealthState, tooltip: &str) -> bo
     }
 
     true
+}
+
+fn set_native_status_highlighted(highlighted: bool) {
+    let Some(status_item) = native_status_item() else {
+        return;
+    };
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
+        return;
+    };
+    if let Some(button) = status_item.button(mtm) {
+        button.setHighlighted(highlighted);
+    }
 }
 
 fn native_status_image_from_bytes(
@@ -1070,8 +1115,25 @@ fn toggle_panel_with_appkit_anchor(
     let panel = app_handle.get_webview_panel("panel").unwrap();
 
     if panel.is_visible() {
+        if PANEL_HIDE_IN_PROGRESS.load(Ordering::Relaxed) {
+            panel_log("toggle_panel: visible -> ignore while hide animation is running");
+            return;
+        }
+        if now_millis().saturating_sub(LAST_PANEL_SHOW_MS.load(Ordering::Relaxed))
+            < PANEL_TRAY_RECLICK_GRACE_MS
+        {
+            panel_log("toggle_panel: visible -> ignore tray repeat");
+            return;
+        }
         panel_log("toggle_panel: visible -> hide");
-        panel.hide();
+        hide_panel(&app_handle, &panel, "toggle-panel-appkit");
+        return;
+    }
+    if source == "event-tap-status-hit"
+        && now_millis().saturating_sub(LAST_PANEL_HIDE_FINISH_MS.load(Ordering::Relaxed))
+            < PANEL_AFTER_HIDE_EVENT_TAP_SUPPRESS_MS
+    {
+        panel_log("toggle_panel: hidden -> ignore stale event tap after hide");
         return;
     }
 
@@ -1091,6 +1153,9 @@ fn claim_tray_toggle(source: &str) -> bool {
         false
     } else {
         LAST_TRAY_TOGGLE_MS.store(now, Ordering::Relaxed);
+        if source != "event-tap-status-hit" {
+            LAST_NATIVE_OR_LOCAL_TRAY_TOGGLE_MS.store(now, Ordering::Relaxed);
+        }
         true
     }
 }
@@ -1101,7 +1166,7 @@ fn toggle_panel(app_handle: tauri::AppHandle, rect: Option<&tauri::Rect>) {
 
     if panel.is_visible() {
         panel_log("toggle_panel: visible -> hide");
-        panel.hide();
+        hide_panel(&app_handle, &panel, "toggle-panel");
         return;
     }
 
@@ -1151,23 +1216,57 @@ fn reveal_panel(app_handle: tauri::AppHandle, source: &str) {
 }
 
 fn show_panel(app_handle: tauri::AppHandle, panel: Arc<dyn Panel>, anchor_x: f64) {
+    PANEL_HIDE_IN_PROGRESS.store(false, Ordering::Relaxed);
+    PANEL_VISIBILITY_TOKEN.fetch_add(1, Ordering::Relaxed);
+    LAST_PANEL_SHOW_MS.store(now_millis(), Ordering::Relaxed);
+    set_native_status_highlighted(true);
     if let Some(click_guard) = app_handle.try_state::<Arc<AtomicU64>>() {
         panel_log("toggle_panel: setting click guard");
         click_guard.store(now_millis() + PANEL_CLICK_GUARD_MS, Ordering::Relaxed);
     } else {
         panel_log("toggle_panel: click guard state missing");
     }
-    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
-        panel_log("toggle_panel: no main thread marker before show");
+    let _ = app_handle.emit("panel-will-show", anchor_x);
+    panel_log(&format!(
+        "toggle_panel: emitted panel-will-show anchor={anchor_x:.2}"
+    ));
+    let show_handle = app_handle.clone();
+    std::thread::Builder::new()
+        .name("observer-panel-show-prime".to_string())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_millis(PANEL_SHOW_ANIMATION_PRIME_MS));
+            let dispatch_handle = show_handle.clone();
+            if let Err(error) = show_handle.run_on_main_thread(move || {
+                finish_show_panel(dispatch_handle, panel, anchor_x);
+            }) {
+                panel_log(&format!(
+                    "toggle_panel: delayed show dispatch failed: {error}"
+                ));
+            }
+        })
+        .map(|_| ())
+        .unwrap_or_else(|error| {
+            panel_log(&format!(
+                "toggle_panel: delayed show thread failed: {error}"
+            ))
+        });
+}
+
+fn finish_show_panel(app_handle: tauri::AppHandle, panel: Arc<dyn Panel>, anchor_x: f64) {
+    let Some(_mtm) = objc2_foundation::MainThreadMarker::new() else {
+        panel_log("toggle_panel: no main thread marker before finish show");
         return;
     };
 
-    objc2_app_kit::NSApp(mtm).activateIgnoringOtherApps(true);
     panel.set_level(PanelLevel::PopUpMenu.value());
-    panel.order_front_regardless();
-    panel_log("toggle_panel: show_and_make_key");
-    panel.show_and_make_key();
-    panel.order_front_regardless();
+    unsafe {
+        let ns = panel.as_panel();
+        let content_view: objc2::rc::Retained<objc2_app_kit::NSView> =
+            objc2::msg_send![ns, contentView];
+        let _: bool = objc2::msg_send![ns, makeFirstResponder: &*content_view];
+    }
+    panel_log("toggle_panel: make_key_and_order_front");
+    panel.make_key_and_order_front();
     log_panel_window_state(&panel, "after-show");
     panel_log(&format!(
         "toggle_panel: visible_after_show={}",
@@ -1177,6 +1276,76 @@ fn show_panel(app_handle: tauri::AppHandle, panel: Arc<dyn Panel>, anchor_x: f64
     panel_log(&format!(
         "toggle_panel: emitted panel-shown anchor={anchor_x:.2}"
     ));
+}
+
+fn hide_panel(app_handle: &tauri::AppHandle, panel: &Arc<dyn Panel>, source: &str) {
+    if !panel.is_visible() {
+        PANEL_HIDE_IN_PROGRESS.store(false, Ordering::Relaxed);
+        set_native_status_highlighted(false);
+        panel_log(&format!(
+            "{source}: hide ignored because panel is already hidden"
+        ));
+        return;
+    }
+    let now = now_millis();
+    if PANEL_HIDE_IN_PROGRESS.load(Ordering::Relaxed)
+        && now.saturating_sub(LAST_PANEL_HIDE_REQUEST_MS.load(Ordering::Relaxed))
+            < PANEL_HIDE_DUPLICATE_GUARD_MS
+    {
+        panel_log(&format!(
+            "{source}: hide ignored while animation is running"
+        ));
+        return;
+    }
+    LAST_PANEL_HIDE_REQUEST_MS.store(now, Ordering::Relaxed);
+    PANEL_HIDE_IN_PROGRESS.store(true, Ordering::Relaxed);
+    let token = PANEL_VISIBILITY_TOKEN.fetch_add(1, Ordering::Relaxed) + 1;
+    panel_log(&format!("{source}: begin hide animation token={token}"));
+    let _ = app_handle.emit("panel-will-hide", token);
+    let hide_handle = app_handle.clone();
+    let hide_panel = panel.clone();
+    let source_label = source.to_string();
+    std::thread::Builder::new()
+        .name("observer-panel-hide-animation".to_string())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_millis(PANEL_HIDE_ANIMATION_FALLBACK_MS));
+            let dispatch_handle = hide_handle.clone();
+            let finish_source = source_label.clone();
+            if let Err(error) = hide_handle.run_on_main_thread(move || {
+                finish_hide_panel(dispatch_handle, hide_panel, finish_source, token);
+            }) {
+                panel_log(&format!(
+                    "{source_label}: delayed hide dispatch failed: {error}"
+                ));
+            }
+        })
+        .map(|_| ())
+        .unwrap_or_else(|error| {
+            panel_log(&format!("{source}: delayed hide thread failed: {error}"))
+        });
+}
+
+fn finish_hide_panel(
+    app_handle: tauri::AppHandle,
+    panel: Arc<dyn Panel>,
+    source: String,
+    token: u64,
+) {
+    if PANEL_VISIBILITY_TOKEN.load(Ordering::Relaxed) != token {
+        panel_log(&format!("{source}: hide skipped by newer visibility token"));
+        return;
+    }
+    if !PANEL_HIDE_IN_PROGRESS.swap(false, Ordering::Relaxed) && !panel.is_visible() {
+        panel_log(&format!(
+            "{source}: hide skipped because panel is already hidden"
+        ));
+        return;
+    }
+    panel_log(&format!("{source}: hide"));
+    panel.hide();
+    LAST_PANEL_HIDE_FINISH_MS.store(now_millis(), Ordering::Relaxed);
+    set_native_status_highlighted(false);
+    let _ = app_handle.emit("panel-hidden", ());
 }
 
 fn position_panel(app_handle: &tauri::AppHandle, rect: &tauri::Rect) -> Option<f64> {
@@ -1392,7 +1561,7 @@ fn hide_panel_for_transparent_gutter_click(
         "local click: transparent gutter -> hide point=({:.1},{:.1})",
         point.x, point.y
     ));
-    panel.hide();
+    hide_panel(app_handle, &panel, "transparent-gutter");
     true
 }
 
@@ -1466,6 +1635,15 @@ fn set_appkit_panel_frame(app_handle: &tauri::AppHandle, placement: AppKitPlacem
     };
     unsafe {
         let ns = panel.as_panel();
+        let current: objc2_foundation::NSRect = objc2::msg_send![ns, frame];
+        let unchanged = (current.origin.x - frame.origin.x).abs() < 0.5
+            && (current.origin.y - frame.origin.y).abs() < 0.5
+            && (current.size.width - frame.size.width).abs() < 0.5
+            && (current.size.height - frame.size.height).abs() < 0.5;
+        if unchanged {
+            panel_log("appkit set frame: unchanged");
+            return true;
+        }
         let _: () = objc2::msg_send![ns, setFrame: frame, display: false];
     }
     true
@@ -1523,7 +1701,7 @@ fn appkit_status_button_anchor_for_event(event: &objc2_app_kit::NSEvent) -> Opti
         "appkit event anchor: point=({:.1},{:.1}) rect=({:.1},{:.1},{:.1},{:.1})",
         point.x, point.y, rect.x, rect.y, rect.width, rect.height
     ));
-    appkit_anchor_from_rect(rect)
+    native_status_button_anchor().or_else(|| appkit_anchor_from_rect(rect))
 }
 
 fn native_status_item() -> Option<&'static objc2_app_kit::NSStatusItem> {
@@ -1618,7 +1796,7 @@ fn appkit_status_button_anchor_for_mouse_inner(
             ));
         }
 
-        if rect.contains(mouse_x, mouse_y, 8.0)
+        if rect.contains(mouse_x, mouse_y, 3.0)
             || appkit_status_button_menu_bar_fallback_hit(frame, rect, mouse_x, mouse_y)
         {
             return appkit_anchor_from_rect(rect);
@@ -1646,10 +1824,11 @@ fn appkit_status_button_menu_bar_fallback_hit(
     mouse_x: f64,
     mouse_y: f64,
 ) -> bool {
-    let horizontal_padding = 22.0;
-    let top_band_height = 48.0_f64.max(rect.height + 18.0);
+    let horizontal_padding = 4.0;
+    let vertical_padding = 4.0;
+    let top_band_height = rect.height + vertical_padding;
     let in_top_menu_bar_band =
-        mouse_y >= screen.max_y() - top_band_height && mouse_y <= screen.max_y() + 6.0;
+        mouse_y >= screen.max_y() - top_band_height && mouse_y <= screen.max_y() + vertical_padding;
     let near_status_button_x =
         mouse_x >= rect.x - horizontal_padding && mouse_x <= rect.max_x() + horizontal_padding;
 
@@ -1671,6 +1850,36 @@ fn appkit_status_button_menu_bar_fallback_hit(
     } else {
         false
     }
+}
+
+fn appkit_point_from_quartz_point(
+    quartz_x: f64,
+    quartz_y: f64,
+) -> Option<objc2_foundation::NSPoint> {
+    let mtm = objc2_foundation::MainThreadMarker::new()?;
+    let screens = objc2_app_kit::NSScreen::screens(mtm);
+    for index in 0..screens.count() {
+        let screen = screens.objectAtIndex(index);
+        let frame = appkit_rect_from_ns_rect(screen.frame());
+        let converted_y = frame.max_y() - quartz_y;
+        if quartz_x >= frame.x
+            && quartz_x <= frame.max_x()
+            && converted_y >= frame.y
+            && converted_y <= frame.max_y()
+        {
+            return Some(objc2_foundation::NSPoint {
+                x: quartz_x,
+                y: converted_y,
+            });
+        }
+    }
+
+    let main = objc2_app_kit::NSScreen::mainScreen(mtm)?;
+    let frame = appkit_rect_from_ns_rect(main.frame());
+    Some(objc2_foundation::NSPoint {
+        x: quartz_x,
+        y: frame.max_y() - quartz_y,
+    })
 }
 
 fn appkit_view_screen_rect(view: &objc2_app_kit::NSView) -> Option<AppKitRect> {
@@ -1881,8 +2090,7 @@ fn clamp_panel_position(value: f64, min: f64, max: f64) -> f64 {
 
 fn hide_panel_always(app_handle: tauri::AppHandle) {
     if let Ok(panel) = app_handle.get_webview_panel("panel") {
-        panel_log("hide_panel_always: hide");
-        panel.hide();
+        hide_panel(&app_handle, &panel, "hide_panel_always");
     }
 }
 

@@ -32,6 +32,7 @@
 - 2026-06-07 进度保存：完成当前版本真实验收，用户确认主屏/副屏点击、通知链路和当前运行效果均正常；完成一轮 UI/UE 优化，面板改为更克制的深色监控台视觉，顶部统计拆分为工作中 / 高危 / 注意 / Token，设置面板改为总览 / 告警 / 数据 / 隐私分组，完整视图和列表密度进一步优化。
 - 2026-06-07 验证：`pnpm build`、`pnpm tauri build --debug`、`cargo fmt --check`、`cargo test`（39 passed）、`git diff --check` 均通过；debug app 已重新打包并启动。截图工具会触发 nonactivating panel 的全局点击收起，因此打开态视觉截图不作为自动验收依据，日志确认 `visible=true` 和副屏 frame 正常。
 - 2026-06-07 完整测试轮次：完成机器侧完整测试，覆盖前端构建、Rust 格式、Rust 单测、diff 空白检查、debug app/dmg 打包、debug app 重启、native status item/event tap 安装、monitor snapshot、状态图标更新和副屏状态项点击定位。当前仅保留已知 deprecated warnings：`NSStatusItem::setTarget/setAction`、`NSApplication::activateIgnoringOtherApps`。
+- 2026-06-11 稳定点：完成 Agent 深度采集、风险/权限观察、Bevel 风格主面板优化、卡片/简表聚焦入口、CleanMyMac 风格面板开合动效和正式菜单栏图标替换；菜单栏图标改为 44x44 Retina 模板资源并关闭按钮自动缩放，提升与微信/输入法等原生状态栏图标的清晰度一致性。验证通过 `pnpm build`、`cargo fmt --check`、`cargo test`（51 passed）、`git diff --check`、`pnpm tauri build --debug`，debug app 已重启到 `/tmp/ObserverDebugRun/观察者.app`。
 
 ---
 

@@ -290,6 +290,8 @@
   }
 
   type SettingsTab = "general" | "alerts" | "data" | "privacy";
+  type SettingsFeedbackScope = "general" | "alerts" | "history" | "privacy" | "remote";
+  type SettingsFeedbackTone = "info" | "ok" | "warning";
 
   interface SettingsTabOption {
     key: SettingsTab;
@@ -301,7 +303,7 @@
     label: string;
     value: string;
     hint: string;
-    tone: "ok" | "work" | "warning" | "critical" | "info";
+    tone: "ok" | "work" | "warning" | "critical" | "info" | "neutral";
   }
 
   interface PanelSignalCell {
@@ -335,9 +337,10 @@
   let sessions: AgentSession[] = $state([]);
   let monitorSnapshot = $state<MonitorSnapshot>(emptyMonitorSnapshot());
   let claudeStatusLine = $state<ClaudeStatusLineStatus | null>(null);
-  let animationKey = $state(0);
   let panelAnchorX = $state(50);
   let hasShown = $state(false);
+  let panelAnimationReady = $state(false);
+  let panelIsClosing = $state(false);
   let settingsOpen = $state(false);
   let selectedSessionId = $state<string | null>(null);
   let notificationStatus = $state("通知未开启");
@@ -355,16 +358,85 @@
   let settingsTab = $state<SettingsTab>("general");
   let eventHistory: SessionEvent[] = $state([]);
   let upgradePrompt = $state("");
+  let settingsFeedback = $state("");
+  let settingsFeedbackScope = $state<SettingsFeedbackScope>("general");
+  let settingsFeedbackTone = $state<SettingsFeedbackTone>("info");
   let cleaningPortKey = $state<string | null>(null);
 
   let notificationsPrimed = false;
   let previousSessionState = new Map<string, SessionSnapshot>();
   let previousGlobalRiskKeys = new Set<string>();
   let historyPrimed = false;
+  let panelAnimationToken = 0;
+  let panelHideTimer: ReturnType<typeof setTimeout> | null = null;
   const notificationCooldowns = new Map<string, number>();
 
   function logFrontend(message: string) {
     invoke("frontend_log", { message }).catch(() => {});
+  }
+
+  function startPanelAnimation() {
+    const alreadyShown = panelAnimationReady && hasShown && !panelIsClosing;
+    const token = ++panelAnimationToken;
+    clearPanelHideTimer();
+    panelAnimationReady = true;
+    panelIsClosing = false;
+    if (alreadyShown) return;
+    hasShown = false;
+    requestAnimationFrame(() => {
+      if (token !== panelAnimationToken) return;
+      requestAnimationFrame(() => {
+        if (token !== panelAnimationToken) return;
+        hasShown = true;
+      });
+    });
+  }
+
+  function preparePanelAnimation() {
+    if (panelAnimationReady && hasShown && !panelIsClosing) return;
+    panelAnimationToken++;
+    clearPanelHideTimer();
+    panelAnimationReady = true;
+    panelIsClosing = false;
+    hasShown = false;
+  }
+
+  function resetPanelAnimation() {
+    panelAnimationToken++;
+    clearPanelHideTimer();
+    hasShown = false;
+    panelIsClosing = false;
+    panelAnimationReady = false;
+  }
+
+  function stopPanelAnimation(token?: number) {
+    const animationToken = ++panelAnimationToken;
+    clearPanelHideTimer();
+    panelAnimationReady = true;
+    panelIsClosing = true;
+    hasShown = true;
+    if (typeof token === "number") {
+      requestAnimationFrame(() => {
+        if (animationToken !== panelAnimationToken) return;
+        panelHideTimer = setTimeout(() => {
+          panelHideTimer = null;
+          invoke("finish_panel_hide", { token }).catch((error) => {
+            logFrontend(`finish_panel_hide failed ${formatError(error)}`);
+          });
+        }, 440);
+      });
+    }
+  }
+
+  function clearPanelHideTimer() {
+    if (panelHideTimer) {
+      clearTimeout(panelHideTimer);
+      panelHideTimer = null;
+    }
+  }
+
+  function popDelay(index: number, base = 70, step = 28): string {
+    return `${base + Math.min(index, 8) * step}ms`;
   }
 
   onMount(() => {
@@ -408,10 +480,17 @@
         .catch((error) => logFrontend(`listen event-history-update failed ${formatError(error)}`));
       logFrontend("App listen event-history-update scheduled");
 
+      listen<number>("panel-will-show", (event) => {
+        panelAnchorX = event.payload ?? 50;
+        preparePanelAnimation();
+      })
+        .then((unlisten) => unlisteners.push(unlisten))
+        .catch((error) => logFrontend(`listen panel-will-show failed ${formatError(error)}`));
+      logFrontend("App listen panel-will-show scheduled");
+
       listen<number>("panel-shown", (event) => {
         panelAnchorX = event.payload ?? 50;
-        hasShown = true;
-        animationKey++;
+        startPanelAnimation();
         if (currentWindowLabel === "panel") {
           void consumePendingNotificationTarget("panel-shown");
         }
@@ -419,6 +498,24 @@
         .then((unlisten) => unlisteners.push(unlisten))
         .catch((error) => logFrontend(`listen panel-shown failed ${formatError(error)}`));
       logFrontend("App listen panel-shown scheduled");
+
+      listen<void>("panel-hidden", () => {
+        if (currentWindowLabel === "panel") {
+          resetPanelAnimation();
+        }
+      })
+        .then((unlisten) => unlisteners.push(unlisten))
+        .catch((error) => logFrontend(`listen panel-hidden failed ${formatError(error)}`));
+      logFrontend("App listen panel-hidden scheduled");
+
+      listen<number>("panel-will-hide", (event) => {
+        if (currentWindowLabel === "panel") {
+          stopPanelAnimation(event.payload);
+        }
+      })
+        .then((unlisten) => unlisteners.push(unlisten))
+        .catch((error) => logFrontend(`listen panel-will-hide failed ${formatError(error)}`));
+      logFrontend("App listen panel-will-hide scheduled");
 
       listen<void>("notification-target-pending", () => {
         void consumePendingNotificationTarget("backend-activation");
@@ -560,10 +657,21 @@
     return settings.plan === "pro";
   }
 
-  function requirePro(feature: string): boolean {
+  function showSettingsFeedback(
+    message: string,
+    scope: SettingsFeedbackScope = "general",
+    tone: SettingsFeedbackTone = "info"
+  ) {
+    settingsFeedback = message;
+    settingsFeedbackScope = scope;
+    settingsFeedbackTone = tone;
+  }
+
+  function requirePro(feature: string, scope: SettingsFeedbackScope = "general"): boolean {
     if (isProPlan()) return true;
     upgradePrompt = `${feature} 属于 Pro 能力`;
     notificationStatus = upgradePrompt;
+    showSettingsFeedback(upgradePrompt, scope, "warning");
     return false;
   }
 
@@ -662,6 +770,11 @@
     const allowed = new Set(remoteFieldOptions.map((option) => option.key));
     const next = dedupeStrings(values).filter((field) => allowed.has(field));
     return next.length > 0 ? next : defaultSettings().remotePreviewFields;
+  }
+
+  function effectiveRemotePreviewFields(): string[] {
+    const freeFields = new Set(remoteFieldOptions.filter((option) => option.free).map((option) => option.key));
+    return settings.remotePreviewFields.filter((field) => isProPlan() || freeFields.has(field));
   }
 
   async function saveSettings() {
@@ -1112,6 +1225,7 @@
 
   function statusEventSeverity(status: string): SessionEvent["severity"] {
     if (status === "error" || status === "rate_limited") return "critical";
+    if (status === "waiting_approval") return "warning";
     if (["thinking", "executing", "busy"].includes(status)) return "info";
     return "ok";
   }
@@ -1150,7 +1264,7 @@
       });
     }
 
-    if (settings.notifyCompletion && previous && wasActive(previous.status) && !wasActive(session.status)) {
+    if (settings.notifyCompletion && previous && wasActive(previous.status) && !wasActive(session.status) && session.status !== "waiting_approval") {
       events.push({
         key: `${session.session_id}:completion:${session.status}`,
         title: `${session.project_name || session.agent_type} 已停下`,
@@ -1184,7 +1298,7 @@
   }
 
   function setContextWarning(percent: number) {
-    if (!requirePro("告警阈值细调")) return;
+    if (!requirePro("告警阈值细调", "alerts")) return;
     settings.contextWarningPercent = percent;
     if (settings.contextCriticalPercent <= percent) {
       settings.contextCriticalPercent = Math.min(100, percent + 10);
@@ -1193,7 +1307,7 @@
   }
 
   function setStalledWarning(minutes: number) {
-    if (!requirePro("假死阈值细调")) return;
+    if (!requirePro("假死阈值细调", "alerts")) return;
     settings.stalledWarningMinutes = minutes;
     if (settings.stalledCriticalMinutes <= minutes) {
       settings.stalledCriticalMinutes = minutes + 15;
@@ -1202,7 +1316,7 @@
   }
 
   function setTokenThreshold(value: number) {
-    if (!requirePro("累计用量阈值细调")) return;
+    if (!requirePro("累计用量阈值细调", "alerts")) return;
     settings.tokenWarningThreshold = value;
     void saveSettings();
   }
@@ -1262,8 +1376,13 @@
     return opencodeRootDraft;
   }
 
-  function setPathDisplayMode(mode: "private" | "compact" | "full") {
+  function setPathDisplayMode(mode: "private" | "compact" | "full", scope: SettingsFeedbackScope = "privacy") {
     settings.pathDisplayMode = mode;
+    showSettingsFeedback(
+      mode === "private" ? "已使用脱敏路径，远程预览不会暴露完整工程目录。" : "路径显示方式已更新。",
+      scope,
+      "ok"
+    );
     void saveSettings();
   }
 
@@ -1271,16 +1390,30 @@
     return settings.remotePreviewFields.includes(field);
   }
 
+  function remoteFieldAvailable(field: string): boolean {
+    const option = remoteFieldOptions.find((item) => item.key === field);
+    return Boolean(option?.free || isProPlan());
+  }
+
   function toggleRemoteField(field: string) {
     const option = remoteFieldOptions.find((item) => item.key === field);
     if (!option) return;
-    if (!option.free && !requirePro("远程深度字段")) return;
+    if (!option.free && !requirePro(`${option.label}远程字段`, "remote")) return;
 
     if (remoteFieldEnabled(field)) {
       settings.remotePreviewFields = settings.remotePreviewFields.filter((item) => item !== field);
+      showSettingsFeedback(`${option.label}已从远程预览中移除。`, "remote", "ok");
     } else {
       settings.remotePreviewFields = normalizeRemotePreviewFields([...settings.remotePreviewFields, field]);
+      showSettingsFeedback(`${option.label}已加入远程预览。`, "remote", "ok");
     }
+    void saveSettings();
+  }
+
+  function setHistoryRetentionDays(days: number) {
+    if (!requirePro("历史保留策略", "history")) return;
+    settings.historyRetentionDays = days;
+    showSettingsFeedback(`事件历史将保留 ${days} 天。`, "history", "ok");
     void saveSettings();
   }
 
@@ -1300,6 +1433,12 @@
   function selectSession(session: AgentSession) {
     selectedSessionId = session.session_id;
     settingsOpen = false;
+  }
+
+  function handleSessionCardKeydown(event: KeyboardEvent, session: AgentSession) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    selectSession(session);
   }
 
   function closeDetail() {
@@ -1351,6 +1490,7 @@
       case "busy":
       case "thinking": return "#FFB84D";
       case "executing": return "#FF9A3C";
+      case "waiting_approval": return "#FFB84D";
       case "waiting":
       case "idle": return "#4CD4A0";
       case "rate_limited": return "#EF4444";
@@ -1366,6 +1506,7 @@
       case "busy": return "运行中";
       case "thinking": return "思考";
       case "executing": return "执行";
+      case "waiting_approval": return "待确认";
       case "waiting": return "等待";
       case "idle": return "空闲";
       case "rate_limited": return "限流";
@@ -1511,17 +1652,10 @@
     return items.map((item) => item.label).join(" · ");
   }
 
-  function highPermissionLabels(session: AgentSession, limit = 2): string[] {
-    return (session.permission_observations ?? [])
-      .filter((item) => item.level === "high")
-      .slice(0, limit)
-      .map((item) => item.label);
-  }
-
   function permissionCompactLabel(session: AgentSession): string {
     const count = session.permission_observations?.length ?? 0;
     const highCount = (session.permission_observations ?? []).filter((item) => item.level === "high").length;
-    if (count === 0) return "权限 0";
+    if (count === 0) return "未见高权限";
     return highCount > 0 ? `权限 ${count} · 高 ${highCount}` : `权限 ${count}`;
   }
 
@@ -1541,13 +1675,13 @@
   }
 
   function modelBadgeLabel(session: AgentSession): string {
-    const model = shortModel(session.model);
+    const model = displayModel(session);
     if (model) return model;
-    return "模型未知";
+    return "模型待识别";
   }
 
   function modelInitial(session: AgentSession): string {
-    const model = (session.model || "").toLowerCase();
+    const model = normalizedModel(session.model).toLowerCase();
     if (model.includes("sonnet")) return "S";
     if (model.includes("opus")) return "O";
     if (model.includes("haiku")) return "H";
@@ -1556,11 +1690,11 @@
     if (model.includes("qwen")) return "Q";
     if (model.includes("deepseek")) return "D";
     if (model.includes("minimax")) return "M";
-    return "M";
+    return agentInitial(session).slice(0, 1);
   }
 
   function modelToneClass(session: AgentSession): string {
-    const combined = `${session.agent_type} ${session.model || ""}`.toLowerCase();
+    const combined = `${session.agent_type} ${normalizedModel(session.model)}`.toLowerCase();
     if (combined.includes("claude")) return "tone-claude";
     if (combined.includes("codex") || combined.includes("gpt") || combined.includes("openai")) return "tone-openai";
     if (combined.includes("opencode")) return "tone-opencode";
@@ -1682,6 +1816,7 @@
     if (session.risk_level === "critical") return "异常";
     if (session.risk_level === "warning") return "待确认";
     if (session.status === "rate_limited") return "限流";
+    if (session.status === "waiting_approval") return "待确认";
     if (wasActive(session.status)) return "工作中";
     if (["waiting", "idle"].includes(session.status)) return "待命";
     if (["done", "finished"].includes(session.status)) return "已停下";
@@ -1690,6 +1825,7 @@
 
   function pulseToneForSession(session: AgentSession): "ok" | "work" | "warning" | "critical" | "idle" {
     if (session.risk_level === "critical" || ["error", "rate_limited", "stalled"].includes(session.status)) return "critical";
+    if (session.status === "waiting_approval") return "warning";
     if (session.risk_level === "warning") return "warning";
     if (wasActive(session.status)) return "work";
     if (["waiting", "idle"].includes(session.status)) return "ok";
@@ -1725,6 +1861,40 @@
       .split("-")
       .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
       .join(" ");
+  }
+
+  function normalizedModel(model: string | null | undefined): string {
+    const raw = (model || "").trim();
+    if (!raw) return "";
+    if (/^v?\d+(?:\.\d+){1,3}(?:[-+][\w.]+)?$/i.test(raw)) return "";
+    if (/^\d{4,8}$/.test(raw)) return "";
+    const lower = raw.toLowerCase();
+    const knownModelHints = [
+      "claude",
+      "sonnet",
+      "opus",
+      "haiku",
+      "gpt",
+      "o3",
+      "o4",
+      "codex",
+      "kimi",
+      "qwen",
+      "deepseek",
+      "minimax",
+      "glm",
+      "doubao",
+      "ernie",
+      "yi-",
+      "moonshot"
+    ];
+    if (knownModelHints.some((hint) => lower.includes(hint))) return raw;
+    if (/^[a-z]+[a-z0-9]*[-/][a-z0-9][\w./-]*$/i.test(raw)) return raw;
+    return "";
+  }
+
+  function displayModel(session: AgentSession): string {
+    return shortModel(normalizedModel(session.model));
   }
 
   function formatClock(secondsAt: number): string {
@@ -1765,7 +1935,7 @@
   }
 
   function sessionSubtitle(session: AgentSession): string {
-    const model = shortModel(session.model);
+    const model = displayModel(session);
     return [session.agent_type, model].filter(Boolean).join(" · ");
   }
 
@@ -1777,15 +1947,29 @@
 
   function externalPrimaryLine(session: AgentSession): string {
     if (session.risks.length > 0) return session.risks[0].title;
-    return shortenPath(session.cwd) || "暂无告警";
+    return livenessLabel(session);
   }
 
   function externalSecondaryLine(session: AgentSession): string {
-    return [
-      livenessLabel(session),
-      lastActivityLabel(session),
-      permissionCompactLabel(session)
-    ].filter(Boolean).join(" · ");
+    const risk = session.risks[0];
+    if (risk) return risk.message || risk.evidence || risk.action || "需要你查看";
+    if (wasActive(session.status)) return conversationTitle(session);
+    if (["waiting", "idle"].includes(session.status)) return "暂无待处理动作";
+    if (["done", "finished"].includes(session.status)) return "会话已停下";
+    return statusLabel(session.status);
+  }
+
+  function cardStateColor(session: AgentSession): string {
+    const risk = session.risks[0];
+    return risk ? riskColor(risk.severity) : statusColor(session.status);
+  }
+
+  function cardPathLine(session: AgentSession): string {
+    return shortenPath(session.cwd) || "未识别项目位置";
+  }
+
+  function permissionChipLabels(session: AgentSession, limit = 2): string[] {
+    return topPermissions(session, limit).map((item) => item.label);
   }
 
   function safeTaskTitle(task: string | null | undefined): string {
@@ -1815,6 +1999,7 @@
       case "progress": return "进展";
       case "error": return "错误";
       case "rate_limited": return "限流";
+      case "waiting_approval": return "待确认";
       case "thinking": return "思考";
       case "executing":
       case "busy": return "执行";
@@ -1838,9 +2023,9 @@
     return [
       conversationTitle(session),
       conversationSummaryLine(session),
-      summary.last_user_hint ? `User ${summary.last_user_hint}` : "",
-      summary.last_assistant_hint ? `Assistant ${summary.last_assistant_hint}` : "",
-      `Privacy ${summary.privacy || "metadata_only"}`
+      summary.last_user_hint ? `用户线索：${summary.last_user_hint}` : "",
+      summary.last_assistant_hint ? `Agent 线索：${summary.last_assistant_hint}` : "",
+      `采集范围：${summary.privacy === "metadata_only" ? "仅元数据" : summary.privacy || "仅元数据"}`
     ].filter(Boolean);
   }
 
@@ -1895,7 +2080,7 @@
       `Agent: ${session.agent_type}`,
       `项目：${sessionTitle(session)}`,
       `状态：${statusLabel(session.status)} (${session.status})`,
-      `模型：${session.model || "未知"}`,
+      `模型：${displayModel(session) || "待识别"}`,
       `路径：${shortenPath(session.cwd)}`,
       `最近活动：${formatRelative(session.last_activity_at)}前`,
       `运行时长：${formatDuration(session.started_at)}`,
@@ -1910,7 +2095,7 @@
       `子 Agent：${(session.subagents ?? []).length}`,
       `工程规模：${session.memory?.file_count ?? 0} 文件 / ${session.memory?.line_count ?? 0} 行`,
       `上下文压缩：${session.compaction_count ?? 0}`,
-      `Git：${session.git ? gitSummary(session.git) : "未识别"}`,
+      `Git：${session.git ? gitSummary(session.git) : "未开启项目目录采集"}`,
       `端口：${session.ports?.length ? session.ports.map((port) => port.port).join(", ") : "未发现"}`,
       "告警：",
       risks
@@ -1918,13 +2103,15 @@
   }
 
   function remotePreviewPayload() {
-    const fields = new Set(settings.remotePreviewFields);
+    const enabledFields = effectiveRemotePreviewFields();
+    const fields = new Set(enabledFields);
     return {
       schema: "observer.remotePreview.v1",
       generatedAt: new Date().toISOString(),
       fieldPolicy: {
         pathDisplayMode: settings.pathDisplayMode,
-        enabledFields: settings.remotePreviewFields,
+        enabledFields,
+        lockedFields: settings.remotePreviewFields.filter((field) => !enabledFields.includes(field)),
         excludedByDesign: ["prompt", "messages", "fileContents", "secrets", "rawCommands"]
       },
       totals: {
@@ -2229,29 +2416,20 @@
     }
   }
 
-  async function openDashboard() {
-    if (!requirePro("完整视图")) return;
-    try {
-      await invoke("open_dashboard");
-      notificationStatus = "已打开完整视图";
-    } catch (error) {
-      console.error("open dashboard failed", error);
-      notificationStatus = "打开完整视图失败";
-    }
-  }
-
   async function clearEventHistory() {
     try {
       eventHistory = normalizeEventHistory(await invoke<SessionEvent[]>("clear_event_history"));
       notificationStatus = "事件历史已清空";
+      showSettingsFeedback("事件历史已清空。", "history", "ok");
     } catch (error) {
       console.error("clear_event_history failed", error);
       notificationStatus = "清空历史失败";
+      showSettingsFeedback("事件历史清空失败，请稍后再试。", "history", "warning");
     }
   }
 
   async function copyEventHistoryExport() {
-    if (!requirePro("事件历史导出")) return;
+    if (!requirePro("事件历史导出", "history")) return;
     try {
       const payload = {
         exportedAt: new Date().toISOString(),
@@ -2259,9 +2437,11 @@
       };
       await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
       notificationStatus = "事件历史已复制";
+      showSettingsFeedback("事件历史已复制到剪贴板。", "history", "ok");
     } catch (error) {
       console.error("copy event history failed", error);
       notificationStatus = "导出失败";
+      showSettingsFeedback("事件历史复制失败，请检查剪贴板权限。", "history", "warning");
     }
   }
 
@@ -2269,9 +2449,11 @@
     try {
       await navigator.clipboard.writeText(JSON.stringify(remotePreviewPayload(), null, 2));
       notificationStatus = "远程预览已复制";
+      showSettingsFeedback("远程预览已复制到剪贴板。", "remote", "ok");
     } catch (error) {
       console.error("copy remote preview failed", error);
       notificationStatus = "复制远程预览失败";
+      showSettingsFeedback("远程预览复制失败，请检查剪贴板权限。", "remote", "warning");
     }
   }
 
@@ -2330,10 +2512,17 @@
 
   function overviewSignalLine(): string {
     if (totalCount === 0) return "等待会话";
-    if (criticalCount > 0) return `${criticalCount} 个问题需要处理`;
-    if (warningOnlyCount > 0) return `${warningOnlyCount} 个信号需要确认`;
-    if (activeCount > 0) return `${activeCount} 个 Agent 工作中`;
-    return "所有会话待命";
+    const firstProject = sessions[0]?.project_name || sessions[0]?.agent_type || "Agent";
+    const suffix = totalCount > 1 ? `等 ${totalCount} 个会话` : "正在监控";
+    return `${firstProject} · ${suffix}`;
+  }
+
+  function overallTone(): "ok" | "work" | "warning" | "critical" | "neutral" {
+    if (totalCount === 0) return "neutral";
+    if (criticalCount > 0) return "critical";
+    if (warningOnlyCount > 0) return "warning";
+    if (activeCount > 0) return "work";
+    return "ok";
   }
 
   function signalSessions(): AgentSession[] {
@@ -2377,20 +2566,26 @@
       {
         label: "存活会话",
         value: `${totalCount}`,
-        hint: `${sessions.filter((session) => session.pid !== null).length} 个进程可关联`,
-        tone: totalCount > 0 ? "ok" : "info"
+        hint: totalCount > 0
+          ? `${sessions.filter((session) => session.pid !== null).length} 个进程可关联`
+          : "等待 Agent 启动",
+        tone: totalCount > 0 ? "ok" : "neutral"
       },
       {
         label: "工作中",
         value: `${activeCount}`,
-        hint: activeCount > 0 ? "正在产生运行信号" : "暂无执行中任务",
-        tone: activeCount > 0 ? "work" : "ok"
+        hint: activeCount > 0 ? "正在产生运行信号" : "当前没有执行中任务",
+        tone: activeCount > 0 ? "work" : "neutral"
       },
       {
         label: "待处理",
         value: `${criticalCount + warningOnlyCount}`,
-        hint: criticalCount > 0 ? `${criticalCount} 个需要立即看` : `${warningOnlyCount} 个待确认`,
-        tone: criticalCount > 0 ? "critical" : warningOnlyCount > 0 ? "warning" : "ok"
+        hint: criticalCount > 0
+          ? `${criticalCount} 个需要立即查看`
+          : warningOnlyCount > 0
+            ? `${warningOnlyCount} 个待确认`
+            : "暂无需要处理",
+        tone: criticalCount > 0 ? "critical" : warningOnlyCount > 0 ? "warning" : "neutral"
       }
     ];
   }
@@ -2407,7 +2602,7 @@
         <div class="pro-feature-grid">
           <div><strong>完整视图</strong><span>多会话表格、筛选排序、项目概览</span></div>
           <div><strong>事件历史</strong><span>重启后保留时间线，支持导出</span></div>
-          <div><strong>深度诊断</strong><span>Git、端口、Pro 风险解释</span></div>
+          <div><strong>深度诊断</strong><span>端口、进程、Pro 风险解释</span></div>
           <div><strong>高级通知</strong><span>阈值细调和 Pro 信号提醒</span></div>
         </div>
         <button onclick={() => setPlan("pro")}>启用 Pro 开发模式</button>
@@ -2532,7 +2727,7 @@
                 </div>
                 <div class="session-cell-token">{formatTokens(totalTokens(session)) || "0"}</div>
                 <div class="session-cell-env">
-                  <span>{session.git ? session.git.branch : "未识别 Git"}</span>
+                  <span>{session.git ? session.git.branch : "目录采集关闭"}</span>
                   <em>{session.children?.length ?? 0} 个进程 · {session.ports?.length ?? 0} 个端口</em>
                 </div>
                 <div class="session-cell-risk" style="color:{riskColor(session.risk_level)}">
@@ -2666,7 +2861,7 @@
                   <div>
                     <span>压缩</span>
                     <strong>{selectedSession.compaction_count ?? 0}</strong>
-                    <em>context events</em>
+                    <em>上下文自动整理次数</em>
                   </div>
                 </div>
                 <div class="mini-timeline-list">
@@ -2785,10 +2980,9 @@
   {/if}
 {:else}
 <div class="panel-wrap">
-{#key animationKey}
-<div class={`panel-shell${hasShown ? " animate-in" : ""}`} style:--anchor-x={`${panelAnchorX}%`}>
+<div class={`panel-shell${panelAnimationReady ? " is-ready" : ""}${hasShown ? " is-shown" : ""}${panelIsClosing ? " is-closing" : ""}`} style:--anchor-x={`${panelAnchorX}%`}>
 <div class="panel">
-  <header>
+  <header class="panel-pop-item" style="--pop-delay:36ms">
     <div class="header-text">
       <h1>
         观察者
@@ -2799,7 +2993,7 @@
         {#if totalCount === 0}
           本地 Agent 存活监控与报警
         {:else}
-          <span class="accent">{totalCount}</span> 会话 · <span class="accent-orange">{activeCount}</span> 工作中 · {overviewSignalLine()}
+          <span class="accent">{totalCount}</span> 会话 · <span class="accent-orange">{activeCount}</span> 工作中 · <span class="accent-alert">{criticalCount + warningOnlyCount}</span> 需查看 · {overviewSignalLine()}
         {/if}
       </p>
     </div>
@@ -2809,16 +3003,16 @@
       </div>
       {#if totalCount > 0 && !selectedSession}
         <div class="view-toggle" aria-label="列表视图">
-          <button class:active={listViewMode === "full"} title="卡片视图" onclick={() => setListViewMode("full")}>卡</button>
-          <button class:active={listViewMode === "compact"} title="紧凑行视图" onclick={() => setListViewMode("compact")}>行</button>
+          <button class:active={listViewMode === "full"} title="详细视图" onclick={() => setListViewMode("full")}>详</button>
+          <button class:active={listViewMode === "compact"} title="简洁视图" onclick={() => setListViewMode("compact")}>简</button>
         </div>
       {/if}
     </div>
   </header>
 
   {#if totalCount > 0 && !selectedSession}
-    <section class={`panel-overview risk-${overallStatus().label}`}>
-      <div class={`overview-monitor-card tone-${criticalCount > 0 ? "critical" : warningOnlyCount > 0 ? "warning" : activeCount > 0 ? "work" : "ok"}`}>
+    <section class={`panel-overview tone-${overallTone()}`}>
+      <div class={`overview-monitor-card panel-pop-item tone-${overallTone()}`} style="--pop-delay:74ms">
         <div class="overview-monitor-copy">
           <span>整体态势</span>
           <strong style="color:{overallStatus().color}">{overallStatus().label}</strong>
@@ -2840,12 +3034,12 @@
           {/each}
         </div>
       </div>
-      <div class="overview-metrics">
-        {#each panelMetricItems() as metric}
-          <div class={`overview-metric tone-${metric.tone}`}>
+      <div class={`overview-metrics tone-${overallTone()}`}>
+        {#each panelMetricItems() as metric, index}
+          <div class={`overview-metric panel-pop-item tone-${metric.tone}`} style="--pop-delay:{popDelay(index, 112, 30)}">
             <span>{metric.label}</span>
             <strong>{metric.value}</strong>
-            <em>{metric.hint}</em>
+            <em title={metric.hint}>{metric.hint}</em>
           </div>
         {/each}
       </div>
@@ -2855,7 +3049,7 @@
   <div class="body" class:detail-mode={selectedSession !== null} class:compact-mode={selectedSession === null && listViewMode === "compact"}>
     {#if selectedSession}
       <section class="detail-view">
-        <div class="detail-nav">
+        <div class="detail-nav panel-pop-item" style="--pop-delay:48ms">
           <button class="back-btn" aria-label="返回会话列表" onclick={closeDetail}>
             <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
               <path d="M9.5 3.5L5.5 7.5l4 4" stroke="rgba(255,255,255,0.72)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2870,7 +3064,7 @@
           </span>
         </div>
 
-        <div class={`detail-hero risk-${selectedSession.risk_level || "ok"}`}>
+        <div class={`detail-hero panel-pop-item risk-${selectedSession.risk_level || "ok"}`} style="--pop-delay:82ms">
           <div>
             <span class="detail-label">运行状态</span>
             <strong style="color:{riskColor(selectedSession.risk_level)}">{riskLabel(selectedSession.risk_level)}</strong>
@@ -2882,7 +3076,7 @@
           </div>
         </div>
 
-        <div class="detail-grid">
+        <div class="detail-grid panel-pop-item" style="--pop-delay:116ms">
           <div class="detail-stat">
             <span>上下文</span>
             <strong>{contextLabel(selectedSession)}</strong>
@@ -2903,7 +3097,7 @@
           </div>
         </div>
 
-        <div class="detail-section">
+        <div class="detail-section panel-pop-item" style="--pop-delay:150ms">
           <div class="section-title">
             <span>会话摘要</span>
             <em>{selectedSession.conversation_summary.privacy || "metadata_only"}</em>
@@ -2915,7 +3109,7 @@
           </div>
         </div>
 
-        <div class="detail-section">
+        <div class="detail-section panel-pop-item" style="--pop-delay:178ms">
           <div class="section-title">
             <span>环境信号</span>
             <em>Pro 诊断</em>
@@ -2927,8 +3121,8 @@
                 <strong>{selectedSession.git.branch}</strong>
                 <em>{gitSummary(selectedSession.git)}</em>
               {:else}
-                <strong>未识别</strong>
-                <em>当前目录不是 Git 工程</em>
+                <strong>未开启</strong>
+                <em>已避免访问项目目录</em>
               {/if}
             </div>
             <div class="signal-card">
@@ -2964,7 +3158,7 @@
           {/if}
         </div>
 
-        <div class="detail-section">
+        <div class="detail-section panel-pop-item" style="--pop-delay:206ms">
           <div class="section-title">
             <span>告警原因</span>
             {#if selectedSession.tier?.pro_locked_count > 0}
@@ -2997,7 +3191,7 @@
           {/if}
         </div>
 
-        <div class="detail-section">
+        <div class="detail-section panel-pop-item" style="--pop-delay:234ms">
           <div class="section-title">
             <span>采集信号</span>
           </div>
@@ -3008,7 +3202,7 @@
           </div>
         </div>
 
-        <div class="detail-section">
+        <div class="detail-section panel-pop-item" style="--pop-delay:262ms">
           <div class="section-title">
             <span>权限观察</span>
             <em>{selectedSession.permission_observations?.length ?? 0} 项</em>
@@ -3030,7 +3224,7 @@
           {/if}
         </div>
 
-        <div class="detail-section">
+        <div class="detail-section panel-pop-item" style="--pop-delay:290ms">
           <div class="section-title">
             <span>过程信号</span>
             <em>{selectedSession.tool_calls?.length ?? 0} 次工具 · {selectedSession.file_accesses?.length ?? 0} 次文件</em>
@@ -3082,16 +3276,16 @@
           {/if}
         </div>
 
-        <div class="detail-actions">
+        <div class="detail-actions panel-pop-item" style="--pop-delay:318ms">
           <button onclick={() => openProject(selectedSession)}>打开项目</button>
           <button onclick={() => openTerminal(selectedSession)}>终端</button>
           <button onclick={() => focusAgent(selectedSession)}>聚焦</button>
           <button onclick={() => copyProjectPath(selectedSession)}>复制路径</button>
-          <button class="primary-action" onclick={() => copyDiagnosticSummary(selectedSession)}>复制诊断</button>
+          <button onclick={() => copyDiagnosticSummary(selectedSession)}>复制诊断</button>
         </div>
       </section>
     {:else if sessions.length === 0}
-      <div class="empty">
+      <div class="empty panel-pop-item" style="--pop-delay:86ms">
         <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
           <circle cx="18" cy="18" r="15" stroke="rgba(255,255,255,0.12)" stroke-width="2"/>
           <path d="M11 18h14M18 11v14" stroke="rgba(255,255,255,0.18)"
@@ -3103,7 +3297,14 @@
     {:else if listViewMode === "compact"}
       <div class="compact-list">
         {#each sessions as session, index (sessionKey(session, index))}
-          <button type="button" class={`compact-row risk-${session.risk_level || "ok"}`} onclick={() => selectSession(session)}>
+          <div
+            class={`compact-row panel-pop-item risk-${session.risk_level || "ok"}`}
+            style="--pop-delay:{popDelay(index, 132, 30)}"
+            role="button"
+            tabindex="0"
+            onclick={() => selectSession(session)}
+            onkeydown={(event) => handleSessionCardKeydown(event, session)}
+          >
             <div class="compact-main">
               <span class={`status-dot pulse-${pulseToneForSession(session)}`}
                 style="background:{statusColor(session.status)};
@@ -3128,12 +3329,28 @@
                 {livenessLabel(session)}
               {/if}
             </div>
-          </button>
+            <button
+              type="button"
+              class="focus-inline-btn"
+              aria-label={`聚焦 ${sessionTitle(session)}`}
+              onclick={(event) => {
+                event.stopPropagation();
+                void focusAgent(session);
+              }}
+            >聚焦</button>
+          </div>
         {/each}
       </div>
     {:else}
       {#each sessions as session, index (sessionKey(session, index))}
-        <button type="button" class={`card risk-${session.risk_level || "ok"}`} onclick={() => selectSession(session)}>
+        <div
+          class={`card panel-pop-item risk-${session.risk_level || "ok"}`}
+          style="--pop-delay:{popDelay(index, 132, 30)}"
+          role="button"
+          tabindex="0"
+          onclick={() => selectSession(session)}
+          onkeydown={(event) => handleSessionCardKeydown(event, session)}
+        >
           <div class="card-top">
             <div class="agent-left">
               <span class={`status-dot pulse-${pulseToneForSession(session)}`}
@@ -3143,44 +3360,54 @@
               <span class="agent-name">{session.project_name || session.agent_type}</span>
               <span class={`model-icon ${modelToneClass(session)}`} title={modelBadgeLabel(session)}>{modelInitial(session)}</span>
             </div>
-            <span class="status-tag" style="color:{statusColor(session.status)}">
-              {statusLabel(session.status)}
-            </span>
+            <div class="card-status-stack">
+              <span class="status-tag" style="color:{statusColor(session.status)}">
+                {statusLabel(session.status)}
+              </span>
+              <span class="last-seen">{lastActivityLabel(session)}</span>
+            </div>
           </div>
           <div class="session-meta-row">
             <span class="agent-chip">{agentDisplayLabel(session)}</span>
             <span class="model-chip">{modelBadgeLabel(session)}</span>
-            <span class="last-seen">{lastActivityLabel(session)}</span>
+            <span class="permission-count-chip">{permissionCompactLabel(session)}</span>
           </div>
-          <div class="cwd compact-cwd">
+          <div class="card-state-line" style="color:{cardStateColor(session)}">
             {externalPrimaryLine(session)}
           </div>
-          <div class="metrics">
-            <div class="metric">
-              <span>状态</span>
-              <strong>{livenessLabel(session)}</strong>
-              <em>{externalSecondaryLine(session)}</em>
-            </div>
-            <div class="metric token-metric">
-              <span>权限观察</span>
-              <strong>{session.permission_observations?.length ?? 0}</strong>
-            </div>
+          <div class="card-evidence-line">
+            {externalSecondaryLine(session)}
+          </div>
+          <div class="card-path-line" title={session.cwd}>
+            <span>位置</span>
+            <em>{cardPathLine(session)}</em>
           </div>
           <div class="card-bottom">
-            {#if highPermissionLabels(session).length > 0}
-              {#each highPermissionLabels(session) as label}
-                <span class="permission-chip">{label}</span>
-              {/each}
-            {:else}
-              <span class="meta-item">{permissionCompactLabel(session)}</span>
-            {/if}
+            <div class="card-permissions">
+              {#if permissionChipLabels(session).length > 0}
+                {#each permissionChipLabels(session) as label}
+                  <span class="permission-chip">{label}</span>
+                {/each}
+              {:else}
+                <span class="meta-item">未发现高权限使用</span>
+              {/if}
+            </div>
+            <button
+              type="button"
+              class="focus-inline-btn"
+              aria-label={`聚焦 ${sessionTitle(session)}`}
+              onclick={(event) => {
+                event.stopPropagation();
+                void focusAgent(session);
+              }}
+            >聚焦</button>
           </div>
-        </button>
+        </div>
       {/each}
     {/if}
   </div>
 
-  <footer>
+  <footer class="panel-pop-item" style="--pop-delay:210ms">
     <button class="footer-btn" aria-label="通知与设置" onclick={toggleSettings}>
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
         <path d="M7 1.5A5.5 5.5 0 107 12.5 5.5 5.5 0 007 1.5zm0 2a3.5 3.5 0 110 7 3.5 3.5 0 010-7z"
@@ -3191,44 +3418,15 @@
     </button>
     <span class="footer-label">
       {#if selectedSession}
-        {selectedSession.risks.length > 0 ? selectedSession.risks[0].title : shortenPath(selectedSession.cwd)}
+        {selectedSession.risks.length > 0 ? selectedSession.risks[0].title : `${sessionTitle(selectedSession)} · ${livenessLabel(selectedSession)}`}
       {:else}
-        {settings.notificationsEnabled ? notificationStatus : (!isProPlan() && proLockedCount > 0 ? "升级 Pro 解锁深度诊断" : "本地实时监控中")}
+        {totalCount > 0 ? `本地实时监控中 · ${formatClock(monitorSnapshot.updated_at)}` : "等待 Agent 会话"}
       {/if}
     </span>
-    {#if selectedSession}
-      <button class={`footer-btn${isProPlan() ? "" : " locked-footer-btn"}`} aria-label="打开完整视图" onclick={openDashboard}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <path d="M2 2.5h4v4H2zM8 2.5h4v4H8zM2 8.5h4v4H2zM8 8.5h4v4H8z"
-            stroke="rgba(255,255,255,0.38)" stroke-width="1.2" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <button class="footer-btn" aria-label="复制诊断摘要" onclick={() => copyDiagnosticSummary(selectedSession)}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <path d="M5 4.5h5.5v7H5z" stroke="rgba(255,255,255,0.38)" stroke-width="1.2" stroke-linejoin="round"/>
-          <path d="M3.5 9.5H2.5v-7H8v1" stroke="rgba(255,255,255,0.38)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-    {:else}
-      <button class={`footer-btn${isProPlan() ? "" : " locked-footer-btn"}`} aria-label="打开完整视图" onclick={openDashboard}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <path d="M2 2.5h4v4H2zM8 2.5h4v4H8zM2 8.5h4v4H2zM8 8.5h4v4H8z"
-            stroke="rgba(255,255,255,0.38)" stroke-width="1.2" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <button class="footer-btn" aria-label="刷新" onclick={refreshSessions}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <path d="M12.5 7A5.5 5.5 0 112 7" stroke="rgba(255,255,255,0.38)"
-            stroke-width="1.4" stroke-linecap="round"/>
-          <path d="M12.5 3.5v3.5H9" stroke="rgba(255,255,255,0.38)"
-            stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-    {/if}
   </footer>
 
   {#if settingsOpen}
-    <div class="settings-panel">
+    <div class="settings-panel panel-pop-item" style="--pop-delay:70ms">
       <div class="settings-head">
         <div>
           <strong>监控设置</strong>
@@ -3250,6 +3448,10 @@
 
       {#if upgradePrompt && !isProPlan()}
         <div class="upgrade-note">{upgradePrompt}</div>
+      {/if}
+
+      {#if settingsFeedback && (settingsFeedbackScope === "general" || settingsFeedbackScope === "alerts" || settingsFeedbackScope === "privacy")}
+        <div class={`settings-inline-feedback tone-${settingsFeedbackTone}`}>{settingsFeedback}</div>
       {/if}
 
       <div class="settings-tabs" role="tablist" aria-label="设置分组">
@@ -3341,7 +3543,7 @@
               type="checkbox"
               bind:checked={settings.notifyProHints}
               onchange={() => {
-                if (requirePro("Pro 信号通知")) void saveSettings();
+                if (requirePro("Pro 信号通知", "alerts")) void saveSettings();
                 else settings.notifyProHints = false;
               }}
             />
@@ -3536,28 +3738,31 @@
             type="checkbox"
             bind:checked={settings.historyEnabled}
             onchange={() => {
-              if (requirePro("事件历史持久化")) void saveSettings();
+              if (requirePro("事件历史持久化", "history")) void saveSettings();
               else settings.historyEnabled = false;
             }}
           />
         </label>
         <div class="cooldown-row">
           <span>保留时间</span>
-          <div class="segmented">
+          <div class={`segmented ${isProPlan() ? "" : "locked-segmented"}`}>
             {#each [7, 30, 90] as days}
               <button
                 class:active={settings.historyRetentionDays === days}
-                onclick={() => {
-                  if (!requirePro("历史保留策略")) return;
-                  settings.historyRetentionDays = days;
-                  void saveSettings();
-                }}
+                aria-disabled={!isProPlan()}
+                title={isProPlan() ? `${days} 天保留` : "Pro 可调整历史保留时间"}
+                onclick={() => setHistoryRetentionDays(days)}
               >
                 {days}d
               </button>
             {/each}
           </div>
         </div>
+        {#if settingsFeedback && settingsFeedbackScope === "history"}
+          <div class={`settings-inline-feedback tone-${settingsFeedbackTone}`}>{settingsFeedback}</div>
+        {:else if !isProPlan()}
+          <p class="settings-note compact-note">当前按 30 天策略预览；调整保留时间和导出历史属于 Pro 能力。</p>
+        {/if}
         <div class="history-action-row">
           <button onclick={copyEventHistoryExport}>复制导出</button>
           <button class="danger-action" onclick={clearEventHistory}>清空历史</button>
@@ -3595,25 +3800,33 @@
       <div class="settings-section">
         <div class="settings-section-title">
           <span>远程预览</span>
-          <em>{settings.remotePreviewFields.length} 字段</em>
+          <em>{effectiveRemotePreviewFields().length} 可用字段</em>
         </div>
         <div class="remote-field-grid">
           {#each remoteFieldOptions as option}
             <button
-              class:active={remoteFieldEnabled(option.key)}
+              class:active={remoteFieldEnabled(option.key) && remoteFieldAvailable(option.key)}
               class:pro-field={!option.free}
+              class:locked-field={!option.free && !isProPlan()}
+              aria-disabled={!option.free && !isProPlan()}
+              title={!option.free && !isProPlan() ? `${option.label}字段属于 Pro 远程预览` : `${option.label}字段`}
               onclick={() => toggleRemoteField(option.key)}
             >
               {option.label}{option.free ? "" : " Pro"}
             </button>
           {/each}
         </div>
+        {#if settingsFeedback && settingsFeedbackScope === "remote"}
+          <div class={`settings-inline-feedback tone-${settingsFeedbackTone}`}>{settingsFeedback}</div>
+        {:else if !isProPlan()}
+          <p class="settings-note compact-note">环境、时间线是远程深度字段，免费版会保留按钮预览但不会导出。</p>
+        {/if}
         <div class="remote-preview-box">
           <pre>{JSON.stringify(remotePreviewPayload(), null, 2).slice(0, 720)}</pre>
         </div>
         <div class="history-action-row">
           <button onclick={copyRemotePreviewExport}>复制预览</button>
-          <button onclick={() => setPathDisplayMode("private")}>使用脱敏</button>
+          <button onclick={() => setPathDisplayMode("private", "remote")}>使用脱敏</button>
         </div>
       </div>
       {/if}
@@ -3630,7 +3843,6 @@
   {/if}
 </div>
 </div>
-{/key}
 </div>
 {/if}
 
@@ -3676,7 +3888,8 @@
     --obs-panel-shadow: 0 2px 12px rgba(0, 0, 0, 0.24), 0 18px 44px -16px rgba(0, 0, 0, 0.56);
     --obs-panel-inset: inset 0 0 0 0.5px rgba(255, 255, 255, 0.16);
     --obs-ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
-    --obs-duration-panel: 0.42s;
+    --obs-ease-pop: cubic-bezier(0.2, 0.98, 0.18, 1);
+    --obs-duration-panel: 0.48s;
     --obs-duration-fast: 0.13s;
   }
 
@@ -4711,13 +4924,70 @@
   }
 
   .panel-shell {
+    --panel-enter-x: 58px;
+    --panel-exit-x: 520px;
     position: relative;
     width: 432px;
     height: 414px;
     transform-origin: var(--anchor-x, 50%) -10px;
     opacity: 1;
-    transform: translateX(0) translateY(0) scale(1);
+    transform: translate3d(var(--panel-enter-x), 0, 0);
+    will-change: transform;
+    backface-visibility: hidden;
+    pointer-events: none;
+  }
+
+  .panel-shell.is-ready {
+    transition:
+      transform 0.28s cubic-bezier(0.18, 0.82, 0.28, 1);
+  }
+
+  .panel-shell.is-ready.is-shown {
+    transition-duration: var(--obs-duration-panel);
+    transition-timing-function: var(--obs-ease-pop);
+  }
+
+  .panel-shell.is-shown {
+    transform: translate3d(0, 0, 0);
+    pointer-events: auto;
+  }
+
+  .panel-shell.is-ready.is-closing {
+    transform: translate3d(var(--panel-exit-x), 0, 0);
+    transition-duration: 0.42s;
+    transition-timing-function: cubic-bezier(0.28, 0.82, 0.22, 1);
+    pointer-events: none;
+  }
+
+  .panel-pop-item {
+    opacity: 0;
+    transform: translate3d(6px, 0, 0);
+    transform-origin: 50% 0;
     will-change: opacity, transform;
+    backface-visibility: hidden;
+  }
+
+  .panel-shell.is-ready .panel-pop-item {
+    transition-property: opacity, transform, background, border-color, box-shadow, color;
+    transition-duration: 0.18s, 0.22s, var(--obs-duration-fast), var(--obs-duration-fast), var(--obs-duration-fast), var(--obs-duration-fast);
+    transition-timing-function: ease, var(--obs-ease-soft), ease, ease, ease, ease;
+    transition-delay: 0s;
+  }
+
+  .panel-shell.is-ready.is-shown .panel-pop-item {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    transition-duration: 0.48s, 0.56s, var(--obs-duration-fast), var(--obs-duration-fast), var(--obs-duration-fast), var(--obs-duration-fast);
+    transition-timing-function: var(--obs-ease-soft), var(--obs-ease-pop), ease, ease, ease, ease;
+    transition-delay: var(--pop-delay, 80ms), var(--pop-delay, 80ms), 0s, 0s, 0s, 0s;
+  }
+
+  .panel-shell.is-ready.is-closing .panel-pop-item {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    transition-property: background, border-color, box-shadow, color;
+    transition-duration: var(--obs-duration-fast);
+    transition-delay: 0s;
   }
 
   .panel-shell::before {
@@ -4746,27 +5016,6 @@
     display: flex;
     flex-direction: column;
     box-shadow: var(--obs-panel-inset);
-  }
-
-  .panel-shell.animate-in {
-    animation: panel-slide-in var(--obs-duration-panel) var(--obs-ease-soft) both;
-  }
-
-  @keyframes panel-slide-in {
-    from {
-      transform: translateX(78px) translateY(0) scale(0.992);
-      opacity: 0;
-    }
-    40% {
-      opacity: 0.78;
-    }
-    78% {
-      opacity: 1;
-    }
-    to {
-      transform: translateX(0) translateY(0) scale(1);
-      opacity: 1;
-    }
   }
 
   /* ── Header ── */
@@ -4802,6 +5051,7 @@
 
   .accent { color: var(--obs-status-info); font-weight: 600; }
   .accent-orange { color: var(--obs-status-work); font-weight: 600; }
+  .accent-alert { color: var(--obs-text-secondary); font-weight: 600; }
 
   .health-stack {
     flex-shrink: 0;
@@ -4942,6 +5192,16 @@
     background: rgba(255, 154, 60, 0.075);
   }
 
+  .overview-monitor-card.tone-ok {
+    border-color: rgba(76, 212, 160, 0.18);
+    background: rgba(76, 212, 160, 0.058);
+  }
+
+  .overview-monitor-card.tone-neutral {
+    border-color: var(--obs-border-soft);
+    background: rgba(255, 255, 255, 0.045);
+  }
+
   .overview-monitor-copy {
     min-width: 0;
   }
@@ -5065,28 +5325,85 @@
   }
 
   .overview-metrics {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 7px;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 5px;
+    border-radius: 10px;
+    border: 0.5px solid var(--obs-border-soft);
+    background: rgba(255, 255, 255, 0.052);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  }
+
+  .overview-metrics.tone-critical {
+    border-color: var(--obs-status-critical-border);
+    background: var(--obs-status-critical-soft);
+  }
+
+  .overview-metrics.tone-warning {
+    border-color: var(--obs-status-warning-border);
+    background: var(--obs-status-warning-soft);
+  }
+
+  .overview-metrics.tone-work {
+    border-color: rgba(255, 154, 60, 0.22);
+    background: rgba(255, 154, 60, 0.075);
+  }
+
+  .overview-metrics.tone-ok {
+    border-color: rgba(76, 212, 160, 0.18);
+    background: rgba(76, 212, 160, 0.058);
+  }
+
+  .overview-metrics.tone-neutral {
+    border-color: var(--obs-border-soft);
+    background: rgba(255, 255, 255, 0.045);
   }
 
   .overview-metric {
     min-width: 0;
-    height: 56px;
-    border-radius: 10px;
-    padding: 8px 9px;
-    border: 0.5px solid var(--obs-border-soft);
-    background: rgba(255, 255, 255, 0.054);
+    flex: 1 1 0;
+    min-height: 26px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(18px, auto);
+    grid-template-rows: 1fr 1fr;
+    column-gap: 8px;
+    align-items: center;
+    align-content: center;
+    padding: 3px 7px 3px 8px;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .overview-metric + .overview-metric {
+    border-left: 0.5px solid rgba(255, 255, 255, 0.055);
+  }
+
+  .overview-metric span,
+  .overview-metric em {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-style: normal;
   }
 
   .overview-metric span {
+    grid-column: 1;
+    grid-row: 1;
     font-size: 9.5px;
-    color: var(--obs-text-muted);
+    line-height: 1.05;
+    color: var(--obs-text-secondary);
   }
 
   .overview-metric strong {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    justify-self: end;
+    text-align: right;
     display: block;
-    margin-top: 4px;
     font-size: 16px;
     line-height: 1;
     color: var(--obs-text-primary);
@@ -5096,9 +5413,11 @@
   }
 
   .overview-metric em {
-    margin-top: 5px;
-    font-size: 9px;
-    color: var(--obs-text-faint);
+    grid-column: 1;
+    grid-row: 2;
+    font-size: 8.5px;
+    line-height: 1.05;
+    color: var(--obs-text-muted);
   }
 
   .overview-metric.tone-ok strong { color: var(--obs-status-ok); }
@@ -5106,6 +5425,7 @@
   .overview-metric.tone-warning strong { color: var(--obs-status-warning); }
   .overview-metric.tone-critical strong { color: var(--obs-status-critical); }
   .overview-metric.tone-info strong { color: var(--obs-status-info); }
+  .overview-metric.tone-neutral strong { color: var(--obs-text-secondary); }
 
   /* ── Body ── */
   .body {
@@ -5166,7 +5486,7 @@
     color: inherit;
     background: var(--obs-surface-card);
     border-radius: var(--obs-card-radius);
-    padding: 6px 10px 6px;
+    padding: 8px 10px 7px;
     cursor: pointer;
     transition: background var(--obs-duration-fast) ease, border-color var(--obs-duration-fast) ease;
     border: 0.5px solid var(--obs-border-soft);
@@ -5193,6 +5513,7 @@
 
   .card:focus-visible,
   .compact-row:focus-visible,
+  .focus-inline-btn:focus-visible,
   .back-btn:focus-visible,
   .footer-btn:focus-visible,
   .mini-button:focus-visible,
@@ -5213,7 +5534,7 @@
     width: 100%;
     min-height: 36px;
     display: grid;
-    grid-template-columns: minmax(0, 1.2fr) 118px 72px;
+    grid-template-columns: minmax(0, 1.15fr) 98px minmax(0, 68px) 38px;
     align-items: center;
     gap: 8px;
     border-radius: var(--obs-control-radius);
@@ -5310,6 +5631,28 @@
   .compact-risk {
     text-align: right;
     font-weight: 600;
+  }
+
+  .focus-inline-btn {
+    appearance: none;
+    height: 22px;
+    min-width: 34px;
+    border-radius: 6px;
+    border: 0.5px solid rgba(255, 255, 255, 0.10);
+    background: rgba(255, 255, 255, 0.075);
+    color: rgba(255, 255, 255, 0.58);
+    font: inherit;
+    font-size: 9.5px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 7px;
+    white-space: nowrap;
+  }
+
+  .focus-inline-btn:hover {
+    background: rgba(78, 202, 255, 0.13);
+    border-color: rgba(78, 202, 255, 0.22);
+    color: rgba(255, 255, 255, 0.86);
   }
 
   /* ── Detail ── */
@@ -5830,17 +6173,12 @@
     color: rgba(255, 255, 255, 0.82);
   }
 
-  .detail-actions .primary-action {
-    color: #fff;
-    background: rgba(78, 202, 255, 0.18);
-    border-color: rgba(78, 202, 255, 0.28);
-  }
-
   .card-top {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 2px;
+    gap: 10px;
+    margin-bottom: 5px;
   }
 
   .agent-left {
@@ -5942,10 +6280,18 @@
 
   .status-tag {
     font-size: 10.5px;
-    font-weight: 500;
+    font-weight: 700;
     white-space: nowrap;
     flex-shrink: 0;
-    margin-left: 8px;
+  }
+
+  .card-status-stack {
+    flex-shrink: 0;
+    min-width: 76px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
   }
 
   .cwd {
@@ -5964,7 +6310,7 @@
     display: flex;
     align-items: center;
     gap: 5px;
-    margin: 4px 0 5px;
+    margin: 0 0 6px 22px;
   }
 
   .session-line {
@@ -5978,6 +6324,7 @@
   .agent-chip,
   .model-chip,
   .last-seen,
+  .permission-count-chip,
   .locked-chip,
   .risk-badge {
     height: 16px;
@@ -6007,11 +6354,69 @@
   }
 
   .last-seen {
-    margin-left: auto;
     color: rgba(255, 255, 255, 0.34);
     background: transparent;
     border-color: transparent;
-    padding-right: 0;
+    padding: 0;
+    height: auto;
+  }
+
+  .permission-count-chip {
+    color: rgba(255, 255, 255, 0.46);
+    max-width: 92px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .card-state-line {
+    min-width: 0;
+    margin-left: 22px;
+    margin-bottom: 3px;
+    font-size: 10.5px;
+    font-weight: 700;
+    line-height: 1.28;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .card-evidence-line {
+    min-width: 0;
+    margin-left: 22px;
+    margin-bottom: 5px;
+    font-size: 9px;
+    line-height: 1.25;
+    color: rgba(255, 255, 255, 0.36);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .card-path-line {
+    min-width: 0;
+    margin-left: 22px;
+    margin-bottom: 6px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    font-size: 9px;
+    line-height: 1.22;
+    color: rgba(255, 255, 255, 0.34);
+  }
+
+  .card-path-line span {
+    color: rgba(255, 255, 255, 0.28);
+  }
+
+  .card-path-line em {
+    min-width: 0;
+    font-style: normal;
+    font-family: "SF Mono", "Menlo", "Monaco", monospace;
+    color: rgba(255, 255, 255, 0.42);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .metrics {
@@ -6068,12 +6473,23 @@
   }
 
   .card-bottom {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 4px;
     font-size: 9.5px;
     color: rgba(255, 255, 255, 0.34);
     min-width: 0;
+    margin-left: 22px;
+    overflow: hidden;
+  }
+
+  .card-permissions {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    overflow: hidden;
   }
 
   .meta-item { white-space: nowrap; }
@@ -6115,18 +6531,28 @@
   footer {
     padding: 8px 16px;
     border-top: 1px solid var(--obs-border-soft);
-    display: flex;
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) 22px;
     align-items: center;
     gap: 10px;
     background: var(--obs-surface-sunken);
   }
 
+  footer::after {
+    content: "";
+    width: 22px;
+    height: 22px;
+  }
+
   .footer-label {
-    flex: 1;
+    min-width: 0;
     text-align: center;
     font-size: 11px;
     color: var(--obs-text-muted);
     letter-spacing: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .footer-btn {
@@ -6146,17 +6572,13 @@
 
   .footer-btn:hover { background: var(--obs-surface-hover); }
 
-  .locked-footer-btn svg {
-    opacity: 0.58;
-  }
-
   .settings-panel {
     position: absolute;
     left: 14px;
     right: 14px;
     bottom: 47px;
     z-index: 5;
-    max-height: 345px;
+    max-height: min(375px, calc(100vh - 70px));
     overflow-y: auto;
     overflow-x: hidden;
     border-radius: 10px;
@@ -6165,7 +6587,7 @@
     box-shadow: 0 16px 38px rgba(0, 0, 0, 0.34);
     -webkit-backdrop-filter: blur(20px) saturate(1.16);
     backdrop-filter: blur(20px) saturate(1.16);
-    padding: 13px;
+    padding: 13px 13px 15px;
   }
 
   .settings-panel::-webkit-scrollbar { width: 3px; }
@@ -6367,6 +6789,28 @@
     line-height: 1.35;
   }
 
+  .settings-inline-feedback {
+    margin: 7px 0 0;
+    border-radius: 7px;
+    padding: 6px 8px;
+    font-size: 10px;
+    line-height: 1.35;
+    border: 0.5px solid rgba(78, 202, 255, 0.20);
+    background: rgba(78, 202, 255, 0.10);
+    color: rgba(255, 255, 255, 0.76);
+  }
+
+  .settings-inline-feedback.tone-ok {
+    border-color: rgba(76, 212, 160, 0.22);
+    background: rgba(76, 212, 160, 0.10);
+  }
+
+  .settings-inline-feedback.tone-warning {
+    border-color: rgba(255, 195, 77, 0.26);
+    background: rgba(255, 195, 77, 0.10);
+    color: rgba(255, 236, 200, 0.88);
+  }
+
   .mini-button,
   .segmented button {
     appearance: none;
@@ -6385,12 +6829,12 @@
   }
 
   .switch-row {
-    min-height: 44px;
+    min-height: 50px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 9px 10px;
+    padding: 10px 10px;
     border-radius: 8px;
     background: var(--obs-surface-card-muted);
   }
@@ -6403,13 +6847,17 @@
   }
 
   .switch-row strong {
+    display: block;
     font-size: 12px;
+    line-height: 1.25;
     color: var(--obs-text-strong);
   }
 
   .switch-row em {
+    display: block;
     font-style: normal;
     font-size: 10px;
+    line-height: 1.25;
     color: var(--obs-status-ok);
   }
 
@@ -6421,7 +6869,7 @@
   }
 
   .compact-switch {
-    min-height: 40px;
+    min-height: 44px;
     padding: 8px 10px;
   }
 
@@ -6673,14 +7121,39 @@
     color: rgba(255, 255, 255, 0.36);
   }
 
+  .remote-field-grid button.locked-field {
+    border-color: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.045);
+    color: rgba(255, 255, 255, 0.30);
+  }
+
+  .remote-field-grid button.locked-field::after {
+    content: "";
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    margin-left: 4px;
+    border-radius: 999px;
+    background: rgba(255, 195, 77, 0.70);
+    vertical-align: middle;
+  }
+
   .remote-preview-box {
-    max-height: 94px;
-    overflow: hidden;
+    max-height: 82px;
+    overflow-y: auto;
+    overflow-x: hidden;
     margin-top: 8px;
     border-radius: 8px;
     border: 0.5px solid rgba(255, 255, 255, 0.08);
     background: rgba(0, 0, 0, 0.18);
     padding: 8px;
+  }
+
+  .remote-preview-box::-webkit-scrollbar { width: 3px; }
+  .remote-preview-box::-webkit-scrollbar-track { background: transparent; }
+  .remote-preview-box::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 2px;
   }
 
   .remote-preview-box pre {
@@ -6775,5 +7248,17 @@
     color: #fff;
     background: rgba(78, 202, 255, 0.22);
     border-color: rgba(78, 202, 255, 0.35);
+  }
+
+  .locked-segmented button {
+    color: rgba(255, 255, 255, 0.42);
+    border-color: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.055);
+  }
+
+  .locked-segmented button.active {
+    color: rgba(255, 255, 255, 0.72);
+    border-color: rgba(255, 195, 77, 0.26);
+    background: rgba(255, 195, 77, 0.11);
   }
 </style>

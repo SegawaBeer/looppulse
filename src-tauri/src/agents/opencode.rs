@@ -1,7 +1,7 @@
 use super::{
-    base_capabilities, content_stats, free_tier, now_seconds, project_name, safe_task_title,
-    summary_hint, AgentPlugin, AgentSession, ConversationSummaryDraft, FileAccess, MemoryInfo,
-    ProcessInfo, ToolCall,
+    base_capabilities, content_stats, free_tier, normalize_project_display_name, now_seconds,
+    project_name_with_fallback, safe_task_title, summary_hint, AgentPlugin, AgentSession,
+    ConversationSummaryDraft, FileAccess, MemoryInfo, ProcessInfo, ToolCall,
 };
 use crate::settings::AppSettings;
 use rusqlite::{params, Connection};
@@ -64,10 +64,13 @@ impl AgentPlugin for OpenCodePlugin {
         settings: &AppSettings,
     ) -> Vec<AgentSession> {
         let live_pids = live_opencode_pids(processes);
+        let live_pid_cwds = super::live_pid_cwds(&live_pids);
         settings
             .opencode_data_roots()
             .into_iter()
-            .flat_map(|root| discover_from_root(&root, &live_pids, processes))
+            .flat_map(|root| {
+                discover_from_root(&root, !live_pid_cwds.is_empty(), &live_pid_cwds, processes)
+            })
             .take(16)
             .collect()
     }
@@ -75,7 +78,8 @@ impl AgentPlugin for OpenCodePlugin {
 
 fn discover_from_root(
     root: &Path,
-    live_pids: &[u32],
+    has_live_agent_process: bool,
+    live_pid_cwds: &[(u32, String)],
     processes: &HashMap<u32, ProcessInfo>,
 ) -> Vec<AgentSession> {
     let db_path = root.join("opencode.db");
@@ -97,7 +101,9 @@ fn discover_from_root(
     };
 
     rows.into_iter()
-        .filter_map(|row| session_from_row(&conn, row, live_pids, processes))
+        .filter_map(|row| {
+            session_from_row(&conn, row, has_live_agent_process, live_pid_cwds, processes)
+        })
         .collect()
 }
 
@@ -194,13 +200,14 @@ fn session_column_expr(columns: &HashSet<String>, column: &str, fallback: &str) 
 fn session_from_row(
     conn: &Connection,
     row: OpenCodeRow,
-    live_pids: &[u32],
+    has_live_agent_process: bool,
+    live_pid_cwds: &[(u32, String)],
     processes: &HashMap<u32, ProcessInfo>,
 ) -> Option<AgentSession> {
     let stats = session_stats(conn, &row.id).unwrap_or_default();
     let last_activity_at = row.time_updated.max(stats.last_signal_at);
     let age = now_seconds().saturating_sub(last_activity_at);
-    let active_window_secs = if live_pids.is_empty() {
+    let active_window_secs = if !has_live_agent_process {
         2 * 60 * 60
     } else {
         6 * 60 * 60
@@ -210,7 +217,7 @@ fn session_from_row(
     }
 
     let cwd = effective_cwd(&row);
-    let pid = live_pids.first().copied();
+    let pid = super::pid_for_cwd(&cwd, live_pid_cwds);
     let cpu_active = pid
         .and_then(|pid| processes.get(&pid))
         .is_some_and(|info| info.cpu_percent > 1.0);
@@ -263,7 +270,8 @@ fn session_from_row(
         project_name: row
             .project_name
             .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| project_name(&cwd)),
+            .map(|name| normalize_project_display_name(&name, "OpenCode 临时对话"))
+            .unwrap_or_else(|| project_name_with_fallback(&cwd, "OpenCode 临时对话")),
         cwd,
         status,
         started_at: row.time_created,
@@ -417,9 +425,12 @@ fn merge_message_value(stats: &mut OpenCodeStats, value: &Value, timestamp: Opti
     }
     if let Some(path) = value.get("path") {
         if let Some(cwd) = path.get("cwd").and_then(Value::as_str) {
-            stats
-                .current_task
-                .get_or_insert_with(|| format!("OpenCode @ {}", project_name(cwd)));
+            stats.current_task.get_or_insert_with(|| {
+                format!(
+                    "OpenCode @ {}",
+                    project_name_with_fallback(cwd, "OpenCode 临时对话")
+                )
+            });
         }
     }
     if value
@@ -1113,7 +1124,7 @@ mod tests {
         .unwrap();
 
         let row = recent_session_rows(&db).unwrap().remove(0);
-        let session = session_from_row(&db, row, &[], &HashMap::new()).unwrap();
+        let session = session_from_row(&db, row, false, &[], &HashMap::new()).unwrap();
 
         assert_eq!(session.agent_type, "OpenCode");
         assert_eq!(session.session_id, "ses_test");
@@ -1133,6 +1144,24 @@ mod tests {
         assert_eq!(session.context_percent, Some(1.23));
         assert_eq!(session.conversation_summary.assistant_turn_count, 1);
         assert_eq!(session.conversation_summary.phase, "completed");
+    }
+
+    #[test]
+    fn cleans_technical_project_name_from_database() {
+        let db = sample_db();
+        let created = now_millis() - 10_000;
+        let updated = now_millis();
+        insert_sample_session(&db, "ses_temp", created, updated);
+        db.execute(
+            "UPDATE project SET name = 'files-mentioned-by-the-user-demo' WHERE id = 'global'",
+            [],
+        )
+        .unwrap();
+
+        let row = recent_session_rows(&db).unwrap().remove(0);
+        let session = session_from_row(&db, row, false, &[], &HashMap::new()).unwrap();
+
+        assert_eq!(session.project_name, "OpenCode 临时对话");
     }
 
     #[test]
@@ -1195,7 +1224,7 @@ mod tests {
         .unwrap();
 
         let row = recent_session_rows(&db).unwrap().remove(0);
-        let session = session_from_row(&db, row, &[], &HashMap::new()).unwrap();
+        let session = session_from_row(&db, row, false, &[], &HashMap::new()).unwrap();
 
         assert_eq!(session.tool_calls.len(), 2);
         assert_eq!(session.tool_calls[0].name, "Read");
@@ -1254,7 +1283,7 @@ mod tests {
         insert_sample_session(&db, "ses_root", now_millis() - 10_000, now_millis());
         drop(db);
 
-        let sessions = discover_from_root(&root, &[], &HashMap::new());
+        let sessions = discover_from_root(&root, false, &[], &HashMap::new());
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "ses_root");

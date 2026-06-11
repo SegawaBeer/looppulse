@@ -1,7 +1,7 @@
 use super::{
-    base_capabilities, content_stats, free_tier, now_seconds, project_name, safe_task_title,
-    summary_hint, AgentPlugin, AgentSession, ConversationSummaryDraft, MemoryInfo, ProcessInfo,
-    ToolCall,
+    base_capabilities, content_stats, free_tier, now_seconds, project_name_with_fallback,
+    safe_task_title, summary_hint, AgentPlugin, AgentSession, ConversationSummaryDraft, MemoryInfo,
+    ProcessInfo, ToolCall,
 };
 use crate::settings::AppSettings;
 use serde_json::Value;
@@ -23,13 +23,14 @@ impl AgentPlugin for CodexPlugin {
         settings: &AppSettings,
     ) -> Vec<AgentSession> {
         let live_pids = live_codex_pids(processes);
+        let live_pid_cwds = super::live_pid_cwds(&live_pids);
         let mcp_owned_rollouts = mcp_owned_rollouts(processes);
         settings
             .codex_data_roots()
             .into_iter()
             .flat_map(|root| recent_rollouts(&root.join("sessions"), 60))
             .filter(|path| !mcp_owned_rollouts.contains(path))
-            .filter_map(|path| parse_rollout(&path, &live_pids, processes))
+            .filter_map(|path| parse_rollout(&path, &live_pid_cwds, processes))
             .take(12)
             .collect()
     }
@@ -91,11 +92,12 @@ fn collect_rollouts(root: &Path, files: &mut Vec<PathBuf>) {
 
 fn parse_rollout(
     path: &Path,
-    live_pids: &[u32],
+    live_pid_cwds: &[(u32, String)],
     processes: &HashMap<u32, ProcessInfo>,
 ) -> Option<AgentSession> {
-    let last_activity_at = modified_secs(path) as i64;
-    let age = now_seconds().saturating_sub(last_activity_at);
+    let file_modified_at = modified_secs(path) as i64;
+    let now = now_seconds();
+    let age = now.saturating_sub(file_modified_at);
     let active_window_secs = 6 * 60 * 60;
     if age > active_window_secs {
         return None;
@@ -106,7 +108,7 @@ fn parse_rollout(
     let mut cwd = String::new();
     let mut model = None;
     let mut effort = None;
-    let mut started_at = last_activity_at;
+    let mut started_at = file_modified_at;
     let mut input_tokens = 0_u64;
     let mut output_tokens = 0_u64;
     let mut cache_read_tokens = 0_u64;
@@ -122,6 +124,7 @@ fn parse_rollout(
     let mut has_error = false;
     let mut saw_task_complete = false;
     let mut saw_rate_limit = false;
+    let mut latest_event_at = None;
 
     for line in content.lines().filter(|line| !line.trim().is_empty()) {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
@@ -133,6 +136,7 @@ fn parse_rollout(
             .and_then(parse_timestamp);
         if let Some(ts) = line_timestamp {
             started_at = started_at.min(ts);
+            latest_event_at = Some(latest_event_at.unwrap_or(ts).max(ts));
         }
 
         match value.get("type").and_then(Value::as_str) {
@@ -389,32 +393,34 @@ fn parse_rollout(
         }
     }
 
-    let pid = live_pids.first().copied();
-    let cpu_active = pid
-        .and_then(|pid| processes.get(&pid))
-        .is_some_and(|info| info.cpu_percent > 1.0);
-    let status = if has_error {
-        "error"
-    } else if saw_rate_limit {
-        "rate_limited"
-    } else if age < 90 && current_task.is_some() {
-        "executing"
-    } else if age < 90 {
-        "thinking"
-    } else if cpu_active {
-        "executing"
-    } else if saw_task_complete {
-        "waiting"
-    } else {
-        "idle"
-    };
-
     if cwd.is_empty() {
         cwd = path
             .parent()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "~/.codex".to_string());
     }
+
+    let pid = super::pid_for_cwd(&cwd, live_pid_cwds);
+    let cpu_active = pid
+        .and_then(|pid| processes.get(&pid))
+        .is_some_and(|info| info.cpu_percent > 1.0);
+    let last_activity_at = latest_event_at.unwrap_or(file_modified_at);
+    let status_age = now.saturating_sub(last_activity_at);
+    let status = if has_error {
+        "error"
+    } else if saw_rate_limit {
+        "rate_limited"
+    } else if saw_task_complete {
+        "waiting"
+    } else if status_age < 90 && current_task.is_some() {
+        "executing"
+    } else if status_age < 90 {
+        "thinking"
+    } else if cpu_active {
+        "executing"
+    } else {
+        "idle"
+    };
 
     let context_pressure_percent = context_window.map(|window| {
         let used = input_tokens.saturating_add(cache_read_tokens);
@@ -444,7 +450,7 @@ fn parse_rollout(
         agent_type: "Codex".to_string(),
         session_id,
         pid,
-        project_name: project_name(&cwd),
+        project_name: project_name_with_fallback(&cwd, "Codex 临时对话"),
         cwd,
         status: status.to_string(),
         started_at,
@@ -611,15 +617,17 @@ mod tests {
         let dir = unique_temp_dir("codex-tool");
         fs::create_dir_all(&dir).unwrap();
         let rollout = dir.join("rollout-test.jsonl");
-        fs::write(
-            &rollout,
-            r#"{"timestamp":"2026-06-04T00:00:00Z","type":"session_meta","payload":{"id":"codex-1","cwd":"/Users/test/codex"}}
-{"timestamp":"2026-06-04T00:00:01Z","type":"turn_context","payload":{"cwd":"/Users/test/codex","model":"gpt-5-codex","effort":"high","model_context_window":100000}}
-{"timestamp":"2026-06-04T00:00:02Z","type":"event_msg","payload":{"type":"mcp_tool_call_begin","invocation":{"id":"mcp-1","tool":"browser.open"}}}
-{"timestamp":"2026-06-04T00:00:04Z","type":"event_msg","payload":{"type":"mcp_tool_call_end","invocation":{"id":"mcp-1","tool":"browser.open"}}}
-{"timestamp":"2026-06-04T00:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":25000,"cached_input_tokens":5000,"output_tokens":1200},"model_context_window":100000},"rate_limits":{"rate_limit_reached_type":null}}}"#,
-        )
-        .unwrap();
+        let content = r#"{"timestamp":"__T0__","type":"session_meta","payload":{"id":"codex-1","cwd":"/Users/test/codex"}}
+{"timestamp":"__T1__","type":"turn_context","payload":{"cwd":"/Users/test/codex","model":"gpt-5-codex","effort":"high","model_context_window":100000}}
+{"timestamp":"__T2__","type":"event_msg","payload":{"type":"mcp_tool_call_begin","invocation":{"id":"mcp-1","tool":"browser.open"}}}
+{"timestamp":"__T4__","type":"event_msg","payload":{"type":"mcp_tool_call_end","invocation":{"id":"mcp-1","tool":"browser.open"}}}
+{"timestamp":"__T3__","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":25000,"cached_input_tokens":5000,"output_tokens":1200},"model_context_window":100000},"rate_limits":{"rate_limit_reached_type":null}}}"#
+            .replace("__T0__", &test_timestamp(-4))
+            .replace("__T1__", &test_timestamp(-3))
+            .replace("__T2__", &test_timestamp(-2))
+            .replace("__T3__", &test_timestamp(-1))
+            .replace("__T4__", &test_timestamp(0));
+        fs::write(&rollout, content).unwrap();
 
         let session = parse_rollout(&rollout, &[], &HashMap::new()).unwrap();
 
@@ -651,6 +659,49 @@ mod tests {
     }
 
     #[test]
+    fn labels_files_mentioned_workspace_as_temporary_chat() {
+        let dir = unique_temp_dir("codex-files-mentioned");
+        fs::create_dir_all(&dir).unwrap();
+        let rollout = dir.join("rollout-files-mentioned.jsonl");
+        fs::write(
+            &rollout,
+            r#"{"timestamp":"__T0__","type":"session_meta","payload":{"id":"codex-temp","cwd":"/Users/test/Documents/Codex/2026-06-11/files-mentioned-by-the-user-5why"}}"#
+                .replace("__T0__", &test_timestamp(0)),
+        )
+        .unwrap();
+
+        let session = parse_rollout(&rollout, &[], &HashMap::new()).unwrap();
+
+        assert_eq!(session.project_name, "Codex 临时对话");
+        assert_eq!(
+            session.cwd,
+            "/Users/test/Documents/Codex/2026-06-11/files-mentioned-by-the-user-5why"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_rollout_touch_does_not_mark_session_active() {
+        let dir = unique_temp_dir("codex-stale-touch");
+        fs::create_dir_all(&dir).unwrap();
+        let rollout = dir.join("rollout-stale.jsonl");
+        fs::write(
+            &rollout,
+            r#"{"timestamp":"2026-06-04T00:00:00Z","type":"session_meta","payload":{"id":"codex-stale","cwd":"/Users/test/stale"}}
+{"timestamp":"2026-06-04T00:00:01Z","type":"response_item","payload":{"type":"function_call","id":"fc-stale","name":"shell","arguments":"{\"command\":\"pnpm build\"}"}}"#,
+        )
+        .unwrap();
+
+        let session = parse_rollout(&rollout, &[], &HashMap::new()).unwrap();
+
+        assert_eq!(session.session_id, "codex-stale");
+        assert_eq!(session.status, "idle");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn summarizes_user_and_agent_messages_without_raw_text() {
         let dir = unique_temp_dir("codex-summary");
         fs::create_dir_all(&dir).unwrap();
@@ -666,6 +717,7 @@ mod tests {
 
         let session = parse_rollout(&rollout, &[], &HashMap::new()).unwrap();
 
+        assert_eq!(session.status, "waiting");
         assert_eq!(session.conversation_summary.user_turn_count, 1);
         assert_eq!(session.conversation_summary.assistant_turn_count, 1);
         assert_eq!(session.conversation_summary.phase, "completed");
@@ -800,5 +852,11 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn test_timestamp(offset_seconds: i64) -> String {
+        chrono::DateTime::<chrono::Utc>::from_timestamp(now_seconds() + offset_seconds, 0)
+            .unwrap()
+            .to_rfc3339()
     }
 }
