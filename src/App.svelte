@@ -6980,6 +6980,8 @@
     font-size: 10.5px;
     color: rgba(255, 255, 255, 0.58);
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .settings-grid input {
@@ -7038,7 +7040,7 @@
 
   .threshold-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
   }
 
