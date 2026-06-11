@@ -1194,13 +1194,17 @@ fn reveal_panel(app_handle: tauri::AppHandle, source: &str) {
         let placement = appkit_panel_placement(anchor);
         let set_frame_ok = set_appkit_panel_frame(&app_handle, placement);
         panel_log(&format!(
-            "reveal_panel: source={source} mouse=({:.1},{:.1}) monitor=({:.1},{:.1},{:.1},{:.1}) panel=({:.1},{:.1},{:.1},{:.1}) set_frame_ok={}",
+            "reveal_panel: source={source} mouse=({:.1},{:.1}) monitor=({:.1},{:.1},{:.1},{:.1}) visible=({:.1},{:.1},{:.1},{:.1}) panel=({:.1},{:.1},{:.1},{:.1}) set_frame_ok={}",
             anchor.mouse_x,
             anchor.mouse_y,
-            anchor.monitor_x,
-            anchor.monitor_y,
-            anchor.monitor_width,
-            anchor.monitor_height,
+            anchor.screen_frame.x,
+            anchor.screen_frame.y,
+            anchor.screen_frame.width,
+            anchor.screen_frame.height,
+            anchor.visible_frame.x,
+            anchor.visible_frame.y,
+            anchor.visible_frame.width,
+            anchor.visible_frame.height,
             placement.x,
             placement.y,
             placement.width,
@@ -1419,13 +1423,17 @@ fn position_panel_at_appkit_mouse(app_handle: &tauri::AppHandle) -> Option<f64> 
     let set_frame_ok = set_appkit_panel_frame(app_handle, placement);
 
     panel_log(&format!(
-        "appkit position: mouse=({:.1},{:.1}) monitor=({:.1},{:.1},{:.1},{:.1}) scale={:.2} panel=({:.1},{:.1},{:.1},{:.1}) set_frame_ok={}",
+        "appkit position: mouse=({:.1},{:.1}) monitor=({:.1},{:.1},{:.1},{:.1}) visible=({:.1},{:.1},{:.1},{:.1}) scale={:.2} panel=({:.1},{:.1},{:.1},{:.1}) set_frame_ok={}",
         anchor.mouse_x,
         anchor.mouse_y,
-        anchor.monitor_x,
-        anchor.monitor_y,
-        anchor.monitor_width,
-        anchor.monitor_height,
+        anchor.screen_frame.x,
+        anchor.screen_frame.y,
+        anchor.screen_frame.width,
+        anchor.screen_frame.height,
+        anchor.visible_frame.x,
+        anchor.visible_frame.y,
+        anchor.visible_frame.width,
+        anchor.visible_frame.height,
         anchor.scale_factor,
         placement.x,
         placement.y,
@@ -1446,13 +1454,17 @@ fn position_panel_at_appkit_anchor(
     let set_frame_ok = set_appkit_panel_frame(app_handle, placement);
 
     panel_log(&format!(
-        "appkit anchor position: source={source} anchor=({:.1},{:.1}) monitor=({:.1},{:.1},{:.1},{:.1}) scale={:.2} panel=({:.1},{:.1},{:.1},{:.1}) set_frame_ok={}",
+        "appkit anchor position: source={source} anchor=({:.1},{:.1}) monitor=({:.1},{:.1},{:.1},{:.1}) visible=({:.1},{:.1},{:.1},{:.1}) scale={:.2} panel=({:.1},{:.1},{:.1},{:.1}) set_frame_ok={}",
         anchor.mouse_x,
         anchor.mouse_y,
-        anchor.monitor_x,
-        anchor.monitor_y,
-        anchor.monitor_width,
-        anchor.monitor_height,
+        anchor.screen_frame.x,
+        anchor.screen_frame.y,
+        anchor.screen_frame.width,
+        anchor.screen_frame.height,
+        anchor.visible_frame.x,
+        anchor.visible_frame.y,
+        anchor.visible_frame.width,
+        anchor.visible_frame.height,
         anchor.scale_factor,
         placement.x,
         placement.y,
@@ -1469,10 +1481,8 @@ struct AppKitAnchor {
     mouse_x: f64,
     mouse_y: f64,
     rect: AppKitRect,
-    monitor_x: f64,
-    monitor_y: f64,
-    monitor_width: f64,
-    monitor_height: f64,
+    screen_frame: AppKitRect,
+    visible_frame: AppKitRect,
     scale_factor: f64,
 }
 
@@ -1485,6 +1495,14 @@ struct AppKitPlacement {
 }
 
 fn appkit_panel_placement(anchor: AppKitAnchor) -> AppKitPlacement {
+    appkit_panel_placement_for_rects(anchor.rect, anchor.screen_frame, anchor.visible_frame)
+}
+
+fn appkit_panel_placement_for_rects(
+    anchor_rect: AppKitRect,
+    screen_frame: AppKitRect,
+    visible_frame: AppKitRect,
+) -> AppKitPlacement {
     let panel_width = PANEL_WIDTH;
     let panel_height = PANEL_HEIGHT;
     let window_width = panel_width + PANEL_GUTTER_LEFT + PANEL_GUTTER_RIGHT;
@@ -1492,18 +1510,22 @@ fn appkit_panel_placement(anchor: AppKitAnchor) -> AppKitPlacement {
     let edge_margin = PANEL_EDGE_MARGIN;
     let top_gap = PANEL_TOP_GAP;
 
-    let min_x = anchor.monitor_x + edge_margin;
-    let max_x = anchor.monitor_x + anchor.monitor_width - panel_width - edge_margin;
+    let min_x = visible_frame.x + edge_margin;
+    let max_x = visible_frame.max_x() - panel_width - edge_margin;
     let panel_x = clamp_panel_position(max_x, min_x, max_x);
-    let menu_bar_bottom_y = if anchor.rect.height > 0.0 {
-        anchor.rect.y
+    let menu_bar_bottom_y = if anchor_rect.height > 0.0 {
+        anchor_rect.y
     } else {
-        anchor.monitor_y + anchor.monitor_height
+        screen_frame.max_y()
     };
+    let preferred_panel_y = menu_bar_bottom_y - panel_height - top_gap;
+    let min_y = visible_frame.y + edge_margin;
+    let max_y = menu_bar_bottom_y - panel_height - top_gap;
+    let panel_y = clamp_panel_position(preferred_panel_y, min_y, max_y);
 
     AppKitPlacement {
         x: panel_x - PANEL_GUTTER_LEFT,
-        y: menu_bar_bottom_y - panel_height - top_gap - PANEL_GUTTER_BOTTOM,
+        y: panel_y - PANEL_GUTTER_BOTTOM,
         width: window_width,
         height: window_height,
     }
@@ -1973,17 +1995,16 @@ fn appkit_anchor_from_screen_with_rect(
     rect: AppKitRect,
     screen: &objc2_app_kit::NSScreen,
 ) -> AppKitAnchor {
-    let frame = screen.frame();
+    let frame = appkit_rect_from_ns_rect(screen.frame());
+    let visible_frame = appkit_rect_from_ns_rect(screen.visibleFrame());
     let scale_factor = screen.backingScaleFactor();
 
     AppKitAnchor {
         mouse_x,
         mouse_y,
         rect,
-        monitor_x: frame.origin.x,
-        monitor_y: frame.origin.y,
-        monitor_width: frame.size.width,
-        monitor_height: frame.size.height,
+        screen_frame: frame,
+        visible_frame,
         scale_factor,
     }
 }
@@ -2109,5 +2130,92 @@ fn panel_log(message: &str) {
         .open(PANEL_LOG_PATH)
     {
         let _ = writeln!(file, "{} {}", now_millis(), message);
+    }
+}
+
+#[cfg(test)]
+mod panel_position_tests {
+    use super::*;
+
+    #[test]
+    fn appkit_placement_uses_upper_secondary_screen() {
+        let screen = AppKitRect {
+            x: -450.0,
+            y: 956.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let visible = AppKitRect {
+            x: -450.0,
+            y: 956.0,
+            width: 1920.0,
+            height: 1055.0,
+        };
+        let anchor = AppKitRect {
+            x: 1125.0,
+            y: 2010.0,
+            width: 32.0,
+            height: 22.0,
+        };
+
+        let placement = appkit_panel_placement_for_rects(anchor, screen, visible);
+
+        assert_eq!(placement.x, 970.0);
+        assert_eq!(placement.y, 1504.0);
+        assert_eq!(placement.width, 590.0);
+        assert_eq!(placement.height, 504.0);
+    }
+
+    #[test]
+    fn appkit_placement_clamps_to_visible_left_edge() {
+        let screen = AppKitRect {
+            x: 0.0,
+            y: 0.0,
+            width: 360.0,
+            height: 640.0,
+        };
+        let visible = AppKitRect {
+            x: 24.0,
+            y: 0.0,
+            width: 312.0,
+            height: 616.0,
+        };
+        let anchor = AppKitRect {
+            x: 300.0,
+            y: 594.0,
+            width: 32.0,
+            height: 22.0,
+        };
+
+        let placement = appkit_panel_placement_for_rects(anchor, screen, visible);
+
+        assert_eq!(placement.x, -24.0);
+        assert_eq!(placement.y, 88.0);
+    }
+
+    #[test]
+    fn appkit_placement_does_not_fall_below_visible_frame() {
+        let screen = AppKitRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1470.0,
+            height: 956.0,
+        };
+        let visible = AppKitRect {
+            x: 0.0,
+            y: 80.0,
+            width: 1470.0,
+            height: 856.0,
+        };
+        let anchor = AppKitRect {
+            x: 1127.0,
+            y: 450.0,
+            width: 32.0,
+            height: 22.0,
+        };
+
+        let placement = appkit_panel_placement_for_rects(anchor, screen, visible);
+
+        assert_eq!(placement.y, 10.0);
     }
 }
