@@ -1,11 +1,11 @@
 # macOS Release Runbook
 
-This document tracks the release path for Observer macOS builds. It keeps signing, notarization, and local verification in one place without storing private Apple account data in the repo.
+This document tracks the release path for LoopPulse macOS builds. It keeps signing, notarization, and local verification in one place without storing private Apple account data in the repo.
 
 ## Current State
 
-- App identifier: `com.observer.menubar`
-- Product name: `观察者`
+- App identifier: `com.looppulse.menubar`
+- Product name: `LoopPulse`
 - Bundle config: `src-tauri/tauri.conf.json`
 - Minimum macOS version: `12.0`
 - Current bundle targets: app and DMG via `pnpm tauri build`
@@ -72,8 +72,8 @@ pnpm tauri build --debug
 Outputs:
 
 ```text
-src-tauri/target/debug/bundle/macos/观察者.app
-src-tauri/target/debug/bundle/dmg/观察者_0.1.0_aarch64.dmg
+src-tauri/target/debug/bundle/macos/LoopPulse.app
+src-tauri/target/debug/bundle/dmg/LoopPulse_0.1.0_aarch64.dmg
 ```
 
 ## Signed Release Build
@@ -107,14 +107,14 @@ APPLE_TEAM_ID
 If the Tauri build is signed but notarization is handled manually:
 
 ```bash
-xcrun notarytool submit "src-tauri/target/release/bundle/dmg/观察者_0.1.0_aarch64.dmg" \
+xcrun notarytool submit "src-tauri/target/release/bundle/dmg/LoopPulse_0.1.0_aarch64.dmg" \
   --key "$APPLE_API_KEY_PATH" \
   --key-id "$APPLE_API_KEY" \
   --issuer "$APPLE_API_ISSUER" \
   --wait
 
-xcrun stapler staple "src-tauri/target/release/bundle/dmg/观察者_0.1.0_aarch64.dmg"
-xcrun stapler validate "src-tauri/target/release/bundle/dmg/观察者_0.1.0_aarch64.dmg"
+xcrun stapler staple "src-tauri/target/release/bundle/dmg/LoopPulse_0.1.0_aarch64.dmg"
+xcrun stapler validate "src-tauri/target/release/bundle/dmg/LoopPulse_0.1.0_aarch64.dmg"
 ```
 
 ## Verification Checklist
@@ -126,9 +126,9 @@ Before sharing a release candidate:
 - `cargo test`
 - `git diff --check`
 - `pnpm tauri build`
-- `codesign --verify --deep --strict --verbose=2 path/to/观察者.app`
-- `spctl --assess --type execute --verbose=4 path/to/观察者.app`
-- `xcrun stapler validate path/to/观察者_*.dmg`
+- `codesign --verify --deep --strict --verbose=2 path/to/LoopPulse.app`
+- `spctl --assess --type execute --verbose=4 path/to/LoopPulse.app`
+- `xcrun stapler validate path/to/LoopPulse_*.dmg`
 
 Manual smoke test:
 

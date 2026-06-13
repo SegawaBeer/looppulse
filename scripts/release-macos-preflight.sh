@@ -33,7 +33,7 @@ require_command() {
   fi
 }
 
-printf "Observer macOS release preflight\n"
+printf "LoopPulse macOS release preflight\n"
 printf "repo: %s\n\n" "$ROOT_DIR"
 
 require_command node
@@ -100,7 +100,7 @@ node <<'NODE'
 const fs = require("fs");
 const config = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
 const failures = [];
-if (config.identifier !== "com.observer.menubar") failures.push(`unexpected identifier: ${config.identifier}`);
+if (config.identifier !== "com.looppulse.menubar") failures.push(`unexpected identifier: ${config.identifier}`);
 if (!config.bundle?.active) failures.push("bundle.active is not true");
 if (!config.bundle?.macOS?.minimumSystemVersion) failures.push("bundle.macOS.minimumSystemVersion is missing");
 if (!config.app?.macOSPrivateApi) failures.push("app.macOSPrivateApi is not enabled");

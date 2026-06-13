@@ -41,7 +41,8 @@ const PANEL_AFTER_HIDE_EVENT_TAP_SUPPRESS_MS: u64 = 700;
 const PANEL_EVENT_TAP_AFTER_NATIVE_SUPPRESS_MS: u64 = 2_400;
 const STATUS_ITEM_WIDTH: f64 = 32.0;
 const PANEL_LOG_PATH: &str = "/tmp/observer-panel.log";
-const INSTANCE_LOCK_PATH: &str = "/tmp/com.observer.menubar.lock";
+const INSTANCE_LOCK_PATH: &str = "/tmp/com.looppulse.menubar.lock";
+const LEGACY_INSTANCE_LOCK_PATH: &str = "/tmp/com.observer.menubar.lock";
 
 static LAST_TRAY_TOGGLE_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_NATIVE_OR_LOCAL_TRAY_TOGGLE_MS: AtomicU64 = AtomicU64::new(0);
@@ -57,7 +58,7 @@ static NATIVE_STATUS_TARGET: OnceLock<usize> = OnceLock::new();
 static NATIVE_STATUS_GESTURE: OnceLock<usize> = OnceLock::new();
 static STATUS_EVENT_TAP_INSTALLED: OnceLock<()> = OnceLock::new();
 static EVENT_TAP_DEBUG_COUNT: AtomicU8 = AtomicU8::new(0);
-static INSTANCE_LOCK_FILE: OnceLock<File> = OnceLock::new();
+static INSTANCE_LOCK_FILES: OnceLock<Vec<File>> = OnceLock::new();
 static PENDING_NOTIFICATION_TARGET: OnceLock<Mutex<Option<PendingNotificationTarget>>> =
     OnceLock::new();
 
@@ -239,11 +240,11 @@ impl TrayHealthState {
             .count();
 
         match self {
-            Self::Unknown | Self::Empty => "观察者 · 暂无会话".to_string(),
-            Self::Critical => format!("观察者 · {critical} 个高危 · {total} 会话"),
-            Self::Warning => format!("观察者 · {warning} 个注意 · {total} 会话"),
-            Self::Active => format!("观察者 · {active} 个活跃 · {total} 会话"),
-            Self::Ok => format!("观察者 · 正常 · {total} 会话"),
+            Self::Unknown | Self::Empty => "LoopPulse · 暂无会话".to_string(),
+            Self::Critical => format!("LoopPulse · {critical} 个高危 · {total} 会话"),
+            Self::Warning => format!("LoopPulse · {warning} 个注意 · {total} 会话"),
+            Self::Active => format!("LoopPulse · {active} 个活跃 · {total} 会话"),
+            Self::Ok => format!("LoopPulse · 正常 · {total} 会话"),
         }
     }
 }
@@ -730,22 +731,26 @@ pub fn run() {
 }
 
 fn acquire_instance_lock() -> bool {
-    let Ok(file) = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(INSTANCE_LOCK_PATH)
-    else {
-        return true;
-    };
+    let mut locks = Vec::new();
+    for path in [INSTANCE_LOCK_PATH, LEGACY_INSTANCE_LOCK_PATH] {
+        let Ok(file) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+        else {
+            continue;
+        };
 
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result != 0 {
-        return false;
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result != 0 {
+            return false;
+        }
+        locks.push(file);
     }
 
-    let _ = INSTANCE_LOCK_FILE.set(file);
+    let _ = INSTANCE_LOCK_FILES.set(locks);
     true
 }
 
@@ -1066,7 +1071,7 @@ fn configure_native_status_button(button: &objc2_app_kit::NSButton) {
     button.setTransparent(false);
     button.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
     button.setImageScaling(objc2_app_kit::NSImageScaling::ScaleNone);
-    button.setToolTip(Some(&objc2_foundation::NSString::from_str("观察者")));
+    button.setToolTip(Some(&objc2_foundation::NSString::from_str("LoopPulse")));
 }
 
 fn apply_tray_health_state(app_handle: &tauri::AppHandle, state: TrayHealthState, tooltip: &str) {

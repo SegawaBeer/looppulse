@@ -1,4 +1,4 @@
-# 观察者 (Observer) — 开发进展
+# LoopPulse — 开发进展
 
 > macOS 菜单栏小工具，用于实时观察 Claude Code 等 AI Agent 会话状态。
 > 技术栈：Tauri 2 + Svelte 5 + Rust。
@@ -8,7 +8,7 @@
 
 ## 一、产品定位
 
-参考 CleanMyMac 的菜单栏面板，做一个常驻菜单栏的"观察者"：
+参考 CleanMyMac 的菜单栏面板，做一个常驻菜单栏的 LoopPulse：
 - 点击托盘图标 → 从右侧滑入面板
 - 面板里以卡片形式列出当前所有 Agent 会话（agent_type / cwd / 状态 / 时长 / token / model）
 - 不抢占焦点（NSPanel `nonactivating`）、跨 Space 跟随、点其他地方自动收起
@@ -20,8 +20,8 @@
 - 记录时间：2026-06-03 10:02 CST
 - 分支 / 基准提交：`codex/Watchx` / `faf2b78`
 - 状态：已按 CleanMyMac 参考视频调校顶部间距和滑入动效，当前 debug 版已打包并启动。
-- 运行包：`src-tauri/target/debug/bundle/macos/观察者.app`
-- DMG：`src-tauri/target/debug/bundle/dmg/观察者_0.1.0_aarch64.dmg`
+- 运行包：`src-tauri/target/debug/bundle/macos/LoopPulse.app`
+- DMG：`src-tauri/target/debug/bundle/dmg/LoopPulse_0.1.0_aarch64.dmg`
 - 可见面板：432x414，圆角 18px，右侧屏幕边距 10px。
 - 原生透明容器：590x504，透明留白为左 58px / 右 100px / 顶 10px / 底 80px。
 - 菜单栏间距：可见面板顶部距菜单栏按钮底部 12px。
@@ -32,7 +32,7 @@
 - 2026-06-07 进度保存：完成当前版本真实验收，用户确认主屏/副屏点击、通知链路和当前运行效果均正常；完成一轮 UI/UE 优化，面板改为更克制的深色监控台视觉，顶部统计拆分为工作中 / 高危 / 注意 / Token，设置面板改为总览 / 告警 / 数据 / 隐私分组，完整视图和列表密度进一步优化。
 - 2026-06-07 验证：`pnpm build`、`pnpm tauri build --debug`、`cargo fmt --check`、`cargo test`（39 passed）、`git diff --check` 均通过；debug app 已重新打包并启动。截图工具会触发 nonactivating panel 的全局点击收起，因此打开态视觉截图不作为自动验收依据，日志确认 `visible=true` 和副屏 frame 正常。
 - 2026-06-07 完整测试轮次：完成机器侧完整测试，覆盖前端构建、Rust 格式、Rust 单测、diff 空白检查、debug app/dmg 打包、debug app 重启、native status item/event tap 安装、monitor snapshot、状态图标更新和副屏状态项点击定位。当前仅保留已知 deprecated warnings：`NSStatusItem::setTarget/setAction`、`NSApplication::activateIgnoringOtherApps`。
-- 2026-06-11 稳定点：完成 Agent 深度采集、风险/权限观察、Bevel 风格主面板优化、卡片/简表聚焦入口、CleanMyMac 风格面板开合动效和正式菜单栏图标替换；菜单栏图标改为 44x44 Retina 模板资源并关闭按钮自动缩放，提升与微信/输入法等原生状态栏图标的清晰度一致性。验证通过 `pnpm build`、`cargo fmt --check`、`cargo test`（51 passed）、`git diff --check`、`pnpm tauri build --debug`，debug app 已重启到 `/tmp/ObserverDebugRun/观察者.app`。
+- 2026-06-11 稳定点：完成 Agent 深度采集、风险/权限观察、Bevel 风格主面板优化、卡片/简表聚焦入口、CleanMyMac 风格面板开合动效和正式菜单栏图标替换；菜单栏图标改为 44x44 Retina 模板资源并关闭按钮自动缩放，提升与微信/输入法等原生状态栏图标的清晰度一致性。验证通过 `pnpm build`、`cargo fmt --check`、`cargo test`（51 passed）、`git diff --check`、`pnpm tauri build --debug`，debug app 已重启到 `/tmp/LoopPulseDebugRun/LoopPulse.app`。
 - 2026-06-11 体验收尾：统一呼吸灯/方块矩阵的告警优先颜色语义，黄色/红色告警不再显示绿色信号灯；“聚焦”增强为 TTY + 主/子进程 cwd + Terminal/iTerm 窗口/标签/session 名 + 终端内容多信号匹配；补充复杂多显示器纯函数测试，覆盖右侧、上方、下方副屏和窄可见区域定位。
 
 ---
@@ -83,7 +83,7 @@
 ## 三、关键文件
 
 ```
-观察者/
+LoopPulse/
 ├── src/App.svelte                  # Svelte 5 UI（卡片列表 + 动画）
 ├── src-tauri/
 │   ├── Cargo.toml                  # 依赖（含 tauri-nspanel / tauri-toolkit）
@@ -158,7 +158,7 @@ block2 = "0.6"
 - [x] Free / Pro 门控第一阶段：设置中新增版本状态；Free 保留菜单栏基础监控、核心通知和详情，Pro 解锁完整视图、事件历史持久化/导出、阈值细调和 Pro 信号通知；Rust 命令层同步兜底，免费版不会把 Pro 诊断信号计入当前风险状态。
 - [x] 数据目录与隐私显示第一阶段：支持 Claude/Codex 自定义数据根目录，多 profile 可并入采集；设置中新增路径显示策略（脱敏 / 简略 / 完整），为后续远程同步字段白名单打基础。
 - [x] 远程同步预览第一阶段：新增本地字段白名单，设置中可选择未来远程 payload 包含身份、状态、风险、token、context、路径、环境和时间线；支持复制脱敏 JSON 预览，明确不包含 prompt、消息正文、文件内容、密钥和原始命令。
-- [x] 开机启动第一阶段：设置中新增开机启动开关；macOS 下通过用户级 LaunchAgent 写入 `~/Library/LaunchAgents/com.observer.menubar.launcher.plist`，登录后自动打开当前 app 包。
+- [x] 开机启动第一阶段：设置中新增开机启动开关；macOS 下通过用户级 LaunchAgent 写入 `~/Library/LaunchAgents/com.looppulse.menubar.launcher.plist`，登录后自动打开当前 app 包。
 - [x] 会话聚焦增强：详情页“聚焦”优先根据 session PID 推导 TTY，并按 TTY 匹配 Terminal / iTerm 标签；失败后再按 tab title、终端内容、项目路径、项目名兜底，最后激活对应应用。
 - [x] OpenCode 支持第一阶段：新增 `~/.local/share/opencode/opencode.db` 只读 collector，默认启用 OpenCode；采集 session/project 元数据、模型、token、step 状态、最近活动和错误/限流信号，设置中支持 OpenCode 自定义数据目录。实现中不读取账号 token 表，不向 UI 暴露消息正文。
 - [x] abtop 细度对齐第一阶段：Claude/Codex 会话新增工具调用 timeline、文件访问摘要、token turn history、context history 和压缩次数；Claude 当前 context 改用最近一轮 input + cache_read，避免只显示累计压力；小面板详情和完整视图 inspector 已展示过程信号。

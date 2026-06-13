@@ -1,8 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-const LAUNCH_AGENT_LABEL: &str = "com.observer.menubar.launcher";
-const LAUNCH_AGENT_FILE: &str = "com.observer.menubar.launcher.plist";
+const LAUNCH_AGENT_LABEL: &str = "com.looppulse.menubar.launcher";
+const LAUNCH_AGENT_FILE: &str = "com.looppulse.menubar.launcher.plist";
+const LEGACY_LAUNCH_AGENT_FILE: &str = "com.observer.menubar.launcher.plist";
 
 pub fn sync_launch_at_login(enabled: bool) -> Result<bool, String> {
     if enabled {
@@ -14,10 +15,11 @@ pub fn sync_launch_at_login(enabled: bool) -> Result<bool, String> {
 }
 
 pub fn launch_at_login_enabled() -> bool {
-    launch_agent_path().is_some_and(|path| path.exists())
+    launch_agent_paths().into_iter().any(|path| path.exists())
 }
 
 fn install_launch_agent() -> Result<(), String> {
+    remove_legacy_launch_agents();
     let app_path = current_app_path()?;
     let plist_path =
         launch_agent_path().ok_or_else(|| "cannot resolve launch agent path".to_string())?;
@@ -34,16 +36,22 @@ fn install_launch_agent() -> Result<(), String> {
 }
 
 fn remove_launch_agent() -> Result<(), String> {
-    let Some(plist_path) = launch_agent_path() else {
-        return Ok(());
-    };
-
-    let _ = launchctl("bootout", &plist_path);
-    let _ = launchctl("unload", &plist_path);
-    if plist_path.exists() {
-        fs::remove_file(&plist_path).map_err(|error| error.to_string())?;
+    for plist_path in launch_agent_paths() {
+        let _ = launchctl("bootout", &plist_path);
+        let _ = launchctl("unload", &plist_path);
+        if plist_path.exists() {
+            fs::remove_file(&plist_path).map_err(|error| error.to_string())?;
+        }
     }
     Ok(())
+}
+
+fn remove_legacy_launch_agents() {
+    for plist_path in legacy_launch_agent_paths() {
+        let _ = launchctl("bootout", &plist_path);
+        let _ = launchctl("unload", &plist_path);
+        let _ = fs::remove_file(&plist_path);
+    }
 }
 
 fn launchctl(action: &str, plist_path: &PathBuf) -> Result<(), String> {
@@ -83,11 +91,24 @@ fn current_app_path() -> Result<PathBuf, String> {
 }
 
 fn launch_agent_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| {
-        home.join("Library")
-            .join("LaunchAgents")
-            .join(LAUNCH_AGENT_FILE)
-    })
+    launch_agent_path_for(LAUNCH_AGENT_FILE)
+}
+
+fn launch_agent_paths() -> Vec<PathBuf> {
+    [LAUNCH_AGENT_FILE, LEGACY_LAUNCH_AGENT_FILE]
+        .into_iter()
+        .filter_map(launch_agent_path_for)
+        .collect()
+}
+
+fn legacy_launch_agent_paths() -> Vec<PathBuf> {
+    launch_agent_path_for(LEGACY_LAUNCH_AGENT_FILE)
+        .into_iter()
+        .collect()
+}
+
+fn launch_agent_path_for(file_name: &str) -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join("Library").join("LaunchAgents").join(file_name))
 }
 
 fn launch_agent_plist(app_path: &PathBuf) -> String {
@@ -128,10 +149,10 @@ mod tests {
 
     #[test]
     fn plist_escapes_app_path() {
-        let plist = launch_agent_plist(&PathBuf::from("/Applications/观察者 & Test.app"));
+        let plist = launch_agent_plist(&PathBuf::from("/Applications/LoopPulse & Test.app"));
 
-        assert!(plist.contains("com.observer.menubar.launcher"));
-        assert!(plist.contains("/Applications/观察者 &amp; Test.app"));
-        assert!(!plist.contains("/Applications/观察者 & Test.app"));
+        assert!(plist.contains("com.looppulse.menubar.launcher"));
+        assert!(plist.contains("/Applications/LoopPulse &amp; Test.app"));
+        assert!(!plist.contains("/Applications/LoopPulse & Test.app"));
     }
 }

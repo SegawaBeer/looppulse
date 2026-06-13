@@ -349,10 +349,10 @@
       key: "welcome",
       visual: "welcome",
       eyebrow: "欢迎使用",
-      title: "观察者会常驻菜单栏",
+      title: "LoopPulse 会常驻菜单栏",
       summary: "它只看三件事：Agent 是否存活、是否正在工作、是否需要你处理。",
       body: [
-        "观察者不是项目管理工具，也不会替你评价任务好坏。",
+        "LoopPulse 不是项目管理工具，也不会替你评价任务好坏。",
         "Claude Code、Codex 或 OpenCode 状态变化时，菜单栏图标和面板会同步更新；只有出现风险时，才会触发通知。"
       ]
     },
@@ -382,7 +382,7 @@
       key: "alerts",
       visual: "alerts",
       eyebrow: "通知与定位",
-      title: "需要处理时，观察者会提醒你",
+      title: "需要处理时，LoopPulse 会提醒你",
       summary: "通知会在新高危、注意风险、限流、错误、疑似假死、等待确认、端口异常或工作中会话停下时触发。",
       body: [
         "疑似假死不会只看“用了多久”，而是结合最近活动、输出变化、工具调用、进程状态等信号，降低把长任务误判成异常的概率。",
@@ -394,7 +394,7 @@
       visual: "privacy",
       eyebrow: "隐私边界",
       title: "默认不展示提示词和消息正文",
-      summary: "观察者主要读取运行状态、进程、路径、工具、权限观察和错误信号，用来判断是否需要提醒。",
+      summary: "LoopPulse 主要读取运行状态、进程、路径、工具、权限观察和错误信号，用来判断是否需要提醒。",
       body: [
         "路径可以在设置里切换脱敏、简略或完整；远程预览字段也可以单独控制。",
         "后续想重新查看这份指引，可以从面板底部的设置入口打开。"
@@ -1119,7 +1119,7 @@
     const granted = await requestNotificationAccess();
     if (!granted) return;
     await emitSystemNotification(
-      "观察者通知测试",
+      "LoopPulse 通知测试",
       "如果你看到这条系统通知，说明通知链路已经打通。"
     );
   }
@@ -1216,7 +1216,7 @@
       if (!port) return null;
       return {
         key,
-        title: `观察者 · 孤儿端口 :${port.port}`,
+        title: `LoopPulse · 孤儿端口 :${port.port}`,
         body: `${port.project_name} 的子进程仍在监听，PID ${port.pid}。`,
         severity: "warning",
         sessionId: port.session_id
@@ -1227,7 +1227,7 @@
       if (!conflict) return null;
       return {
         key,
-        title: `观察者 · 端口冲突 :${conflict.port}`,
+        title: `LoopPulse · 端口冲突 :${conflict.port}`,
         body: `${conflict.owners.length} 个 Agent 会话关联到同一监听端口。`,
         severity: "warning",
         sessionId: conflict.owners[0]?.session_id ?? ""
@@ -1239,7 +1239,7 @@
       if (!limit) return null;
       return {
         key,
-        title: `观察者 · ${source} 限额接近耗尽`,
+        title: `LoopPulse · ${source} 限额接近耗尽`,
         body: rateLimitLabel(limit),
         severity: "critical",
         sessionId: ""
@@ -2262,7 +2262,7 @@
         ].filter(Boolean).join("\n")).join("\n")
       : "- 暂未发现需要处理的告警";
     return [
-      "观察者诊断摘要",
+      "LoopPulse 诊断摘要",
       `Agent: ${session.agent_type}`,
       `项目：${sessionTitle(session)}`,
       `状态：${statusLabel(session.status)} (${session.status})`,
@@ -2803,7 +2803,7 @@
               </div>
               <div class="mock-panel">
                 <div class="mock-panel-head">
-                  <strong>观察者</strong>
+                  <strong>LoopPulse</strong>
                   <span></span>
                 </div>
                 <div class="mock-session-card warning">
@@ -2831,7 +2831,7 @@
             <div class="notification-mock">
               <div class="notification-icon"><img src={observerIconUrl} alt="" /></div>
               <div>
-                <strong>观察者</strong>
+                <strong>LoopPulse</strong>
                 <span>Codex 可能已停在等待确认</span>
                 <em>点击通知后可直接定位到会话详情</em>
               </div>
@@ -2923,7 +2923,7 @@
       <div class="dash-brand">
         <div class="brand-mark">观</div>
         <div>
-          <strong>观察者</strong>
+          <strong>LoopPulse</strong>
           <span>Agent 运行监控</span>
         </div>
       </div>
@@ -3294,7 +3294,7 @@
   <header class="panel-pop-item" style="--pop-delay:36ms">
     <div class="header-text">
       <h1>
-        观察者
+        LoopPulse
         <span class="title-dot" style="color:{overallStatus().color}">·</span>
         <span class="title-status" style="color:{overallStatus().color}">{overallStatus().label}</span>
       </h1>
