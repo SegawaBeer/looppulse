@@ -54,6 +54,8 @@ pub struct AppSettings {
     pub history_enabled: bool,
     #[serde(default = "default_history_retention_days")]
     pub history_retention_days: u64,
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 impl Default for AppSettings {
@@ -82,6 +84,7 @@ impl Default for AppSettings {
             token_warning_threshold: default_token_warning_threshold(),
             history_enabled: true,
             history_retention_days: default_history_retention_days(),
+            onboarding_completed: false,
         }
     }
 }

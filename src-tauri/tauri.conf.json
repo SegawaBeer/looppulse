@@ -33,6 +33,16 @@
         "decorations": true,
         "resizable": true,
         "transparent": false
+      },
+      {
+        "label": "onboarding",
+        "title": "欢迎使用观察者",
+        "width": 900,
+        "height": 690,
+        "visible": false,
+        "decorations": true,
+        "resizable": false,
+        "transparent": false
       }
     ]
   },

@@ -10,8 +10,9 @@ use agents::{AgentSession, MonitorSnapshot};
 use events::SessionEvent;
 use objc2::AnyThread;
 use settings::AppSettings;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::os::fd::AsRawFd;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
     Arc, Mutex, OnceLock,
@@ -40,6 +41,7 @@ const PANEL_AFTER_HIDE_EVENT_TAP_SUPPRESS_MS: u64 = 700;
 const PANEL_EVENT_TAP_AFTER_NATIVE_SUPPRESS_MS: u64 = 2_400;
 const STATUS_ITEM_WIDTH: f64 = 32.0;
 const PANEL_LOG_PATH: &str = "/tmp/observer-panel.log";
+const INSTANCE_LOCK_PATH: &str = "/tmp/com.observer.menubar.lock";
 
 static LAST_TRAY_TOGGLE_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_NATIVE_OR_LOCAL_TRAY_TOGGLE_MS: AtomicU64 = AtomicU64::new(0);
@@ -55,6 +57,7 @@ static NATIVE_STATUS_TARGET: OnceLock<usize> = OnceLock::new();
 static NATIVE_STATUS_GESTURE: OnceLock<usize> = OnceLock::new();
 static STATUS_EVENT_TAP_INSTALLED: OnceLock<()> = OnceLock::new();
 static EVENT_TAP_DEBUG_COUNT: AtomicU8 = AtomicU8::new(0);
+static INSTANCE_LOCK_FILE: OnceLock<File> = OnceLock::new();
 static PENDING_NOTIFICATION_TARGET: OnceLock<Mutex<Option<PendingNotificationTarget>>> =
     OnceLock::new();
 
@@ -514,6 +517,30 @@ fn open_dashboard(app_handle: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn show_onboarding(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app_handle.get_webview_window("onboarding") else {
+        return Err("onboarding window not found".to_string());
+    };
+
+    if let Err(error) = window.emit("onboarding-show", ()) {
+        panel_log(&format!("onboarding reset event failed: {error}"));
+    }
+    window.show().map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.center().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn hide_onboarding(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app_handle.get_webview_window("onboarding") else {
+        return Err("onboarding window not found".to_string());
+    };
+
+    window.hide().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn cleanup_orphan_port(pid: u32, port: u16, force: Option<bool>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let settings = settings::load_settings();
@@ -633,6 +660,10 @@ pub(crate) fn update_tray_health(app_handle: &tauri::AppHandle, sessions: &[Agen
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if !acquire_instance_lock() {
+        return;
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_nspanel::init())
@@ -643,6 +674,7 @@ pub fn run() {
             get_claude_statusline_status,
             get_monitor_snapshot,
             get_sessions,
+            hide_onboarding,
             install_claude_statusline,
             get_settings,
             focus_agent,
@@ -656,6 +688,7 @@ pub fn run() {
             record_notification_target,
             save_settings,
             set_launch_at_login,
+            show_onboarding,
             show_panel_from_notification,
             take_pending_notification_target
         ])
@@ -669,6 +702,17 @@ pub fn run() {
             install_native_status_item(&app_handle);
 
             setup_panel(&app_handle);
+            if let Some(window) = app_handle.get_webview_window("onboarding") {
+                let onboarding_window = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        if let Err(error) = onboarding_window.hide() {
+                            panel_log(&format!("onboarding hide on close failed: {error}"));
+                        }
+                    }
+                });
+            }
             app_handle.listen_notification(
                 "NSApplicationDidBecomeActiveNotification",
                 handle_application_did_become_active,
@@ -683,6 +727,26 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running observer");
+}
+
+fn acquire_instance_lock() -> bool {
+    let Ok(file) = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(INSTANCE_LOCK_PATH)
+    else {
+        return true;
+    };
+
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result != 0 {
+        return false;
+    }
+
+    let _ = INSTANCE_LOCK_FILE.set(file);
+    true
 }
 
 fn setup_panel(app_handle: &tauri::AppHandle) {

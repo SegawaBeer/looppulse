@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Allow the menubar panel to use core Tauri APIs and desktop notifications.","local":true,"windows":["panel","dashboard"],"permissions":["core:default","notification:default"]}}
+{"default":{"identifier":"default","description":"Allow the menubar panel to use core Tauri APIs and desktop notifications.","local":true,"windows":["panel","dashboard","onboarding"],"permissions":["core:default","notification:default"]}}

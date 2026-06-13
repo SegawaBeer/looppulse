@@ -2,6 +2,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import observerIconUrl from "../src-tauri/icons/icon.png";
   import {
     isPermissionGranted,
     onAction,
@@ -250,6 +251,7 @@
     tokenWarningThreshold: number;
     historyEnabled: boolean;
     historyRetentionDays: number;
+    onboardingCompleted: boolean;
   }
 
   interface SessionSnapshot {
@@ -287,6 +289,15 @@
     key: string;
     label: string;
     free: boolean;
+  }
+
+  interface OnboardingStep {
+    key: string;
+    visual: "welcome" | "menubar" | "signals" | "alerts" | "privacy";
+    eyebrow: string;
+    title: string;
+    summary: string;
+    body: string[];
   }
 
   type SettingsTab = "general" | "alerts" | "data" | "privacy";
@@ -333,6 +344,63 @@
     { key: "data", label: "数据", hint: "目录 / 历史" },
     { key: "privacy", label: "隐私", hint: "显示 / 同步" }
   ];
+  const onboardingSteps: OnboardingStep[] = [
+    {
+      key: "welcome",
+      visual: "welcome",
+      eyebrow: "欢迎使用",
+      title: "观察者会常驻菜单栏",
+      summary: "它只看三件事：Agent 是否存活、是否正在工作、是否需要你处理。",
+      body: [
+        "观察者不是项目管理工具，也不会替你评价任务好坏。",
+        "Claude Code、Codex 或 OpenCode 状态变化时，菜单栏图标和面板会同步更新；只有出现风险时，才会触发通知。"
+      ]
+    },
+    {
+      key: "menubar",
+      visual: "menubar",
+      eyebrow: "在哪里查看",
+      title: "点击菜单栏图标打开面板",
+      summary: "再点击一次图标会收回面板；每张卡片代表一个正在被观察的 Agent 会话。",
+      body: [
+        "简略视图适合快速扫状态，详细视图适合查看项目、模型、权限观察和告警原因。",
+        "出现问题时，卡片里的“聚焦”可以把对应窗口找出来，减少在多个终端之间翻找。"
+      ]
+    },
+    {
+      key: "signals",
+      visual: "signals",
+      eyebrow: "颜色语义",
+      title: "先看颜色，再决定是否介入",
+      summary: "绿色代表存活正常，橙色代表正在工作，黄色代表等待确认或需要注意，红色代表错误、假死或限流等高优先级问题。",
+      body: [
+        "顶部矩阵的亮起方块对应当前被识别到的 Agent，会跟随对应会话的状态颜色呼吸。",
+        "颜色只表达行动优先级：绿色通常不用管，橙色表示正在执行，黄色先看是否等待确认，红色需要尽快查看证据。"
+      ]
+    },
+    {
+      key: "alerts",
+      visual: "alerts",
+      eyebrow: "通知与定位",
+      title: "需要处理时，观察者会提醒你",
+      summary: "通知会在新高危、注意风险、限流、错误、疑似假死、等待确认、端口异常或工作中会话停下时触发。",
+      body: [
+        "疑似假死不会只看“用了多久”，而是结合最近活动、输出变化、工具调用、进程状态等信号，降低把长任务误判成异常的概率。",
+        "从通知或卡片进入详情后，优先查看“告警原因”和“证据”，再决定是否切回 Agent 处理。首次启用通知时，macOS 会请求授权。"
+      ]
+    },
+    {
+      key: "privacy",
+      visual: "privacy",
+      eyebrow: "隐私边界",
+      title: "默认不展示提示词和消息正文",
+      summary: "观察者主要读取运行状态、进程、路径、工具、权限观察和错误信号，用来判断是否需要提醒。",
+      body: [
+        "路径可以在设置里切换脱敏、简略或完整；远程预览字段也可以单独控制。",
+        "后续想重新查看这份指引，可以从面板底部的设置入口打开。"
+      ]
+    }
+  ];
 
   let sessions: AgentSession[] = $state([]);
   let monitorSnapshot = $state<MonitorSnapshot>(emptyMonitorSnapshot());
@@ -362,11 +430,14 @@
   let settingsFeedbackScope = $state<SettingsFeedbackScope>("general");
   let settingsFeedbackTone = $state<SettingsFeedbackTone>("info");
   let cleaningPortKey = $state<string | null>(null);
+  let onboardingStep = $state(0);
+  let onboardingDoNotAutoShow = $state(true);
 
   let notificationsPrimed = false;
   let previousSessionState = new Map<string, SessionSnapshot>();
   let previousGlobalRiskKeys = new Set<string>();
   let historyPrimed = false;
+  let onboardingAutoShown = false;
   let panelAnimationToken = 0;
   let panelHideTimer: ReturnType<typeof setTimeout> | null = null;
   const notificationCooldowns = new Map<string, number>();
@@ -508,6 +579,15 @@
         .catch((error) => logFrontend(`listen panel-hidden failed ${formatError(error)}`));
       logFrontend("App listen panel-hidden scheduled");
 
+      listen<void>("onboarding-show", () => {
+        if (currentWindowLabel === "onboarding") {
+          onboardingStep = 0;
+        }
+      })
+        .then((unlisten) => unlisteners.push(unlisten))
+        .catch((error) => logFrontend(`listen onboarding-show failed ${formatError(error)}`));
+      logFrontend("App listen onboarding-show scheduled");
+
       listen<number>("panel-will-hide", (event) => {
         if (currentWindowLabel === "panel") {
           stopPanelAnimation(event.payload);
@@ -628,7 +708,8 @@
       stalledCriticalMinutes: 30,
       tokenWarningThreshold: 1_000_000,
       historyEnabled: true,
-      historyRetentionDays: 30
+      historyRetentionDays: 30,
+      onboardingCompleted: false
     };
   }
 
@@ -695,11 +776,72 @@
       settings = normalizeSettings(await invoke<AppSettings>("get_settings"));
       notificationStatus = settings.notificationsEnabled ? "通知待授权" : "通知未开启";
       settingsStatus = "设置已同步";
+      await showOnboardingIfNeeded();
     } catch (error) {
       console.error("get_settings failed", error);
       settings = loadLegacySettings();
       notificationStatus = settings.notificationsEnabled ? "通知待授权" : "通知未开启";
       settingsStatus = "设置读取失败，使用本地默认";
+      await showOnboardingIfNeeded();
+    }
+  }
+
+  async function showOnboardingIfNeeded() {
+    if (currentWindowLabel !== "panel" || settings.onboardingCompleted || onboardingAutoShown) return;
+    onboardingAutoShown = true;
+    onboardingDoNotAutoShow = true;
+    try {
+      await invoke("show_onboarding");
+    } catch (error) {
+      console.error("show_onboarding failed", error);
+      logFrontend(`show_onboarding failed ${formatError(error)}`);
+    }
+  }
+
+  async function openOnboardingGuide() {
+    onboardingDoNotAutoShow = settings.onboardingCompleted;
+    try {
+      await invoke("show_onboarding");
+      settingsStatus = "使用指引已打开";
+    } catch (error) {
+      console.error("show_onboarding failed", error);
+      settingsStatus = `打开指引失败 · ${formatError(error)}`;
+    }
+  }
+
+  function currentOnboardingStep(): OnboardingStep {
+    return onboardingSteps[Math.min(onboardingStep, onboardingSteps.length - 1)] ?? onboardingSteps[0];
+  }
+
+  function previousOnboardingStep() {
+    onboardingStep = Math.max(0, onboardingStep - 1);
+  }
+
+  function nextOnboardingStep() {
+    if (onboardingStep >= onboardingSteps.length - 1) {
+      void finishOnboarding();
+      return;
+    }
+    onboardingStep += 1;
+  }
+
+  async function finishOnboarding() {
+    settings.onboardingCompleted = onboardingDoNotAutoShow;
+    await saveSettings();
+    await hideOnboardingWindow();
+  }
+
+  async function saveOnboardingPreference() {
+    settings.onboardingCompleted = onboardingDoNotAutoShow;
+    await saveSettings();
+  }
+
+  async function hideOnboardingWindow() {
+    try {
+      await invoke("hide_onboarding");
+    } catch (error) {
+      console.error("hide_onboarding failed", error);
+      logFrontend(`hide_onboarding failed ${formatError(error)}`);
     }
   }
 
@@ -2629,7 +2771,129 @@
   }
 </script>
 
-{#if currentWindowLabel === "dashboard"}
+{#if currentWindowLabel === "onboarding"}
+  <div class={`onboarding-app visual-${currentOnboardingStep().visual}`}>
+    <main class="onboarding-stage">
+      <div class="onboarding-visual" aria-hidden="true">
+        {#if currentOnboardingStep().visual === "welcome"}
+          <div class="welcome-visual">
+            <img class="observer-icon-large" src={observerIconUrl} alt="" />
+            <div class="welcome-signal-grid">
+              {#each ["ok", "work", "warning", "critical", "idle", "idle", "ok", "work", "idle"] as tone}
+                <span class={`mini-signal tone-${tone}`}></span>
+              {/each}
+            </div>
+          </div>
+        {:else if currentOnboardingStep().visual === "menubar"}
+          <div class="menubar-visual">
+            <div class="mock-display">
+              <div class="mock-menubar">
+                <span class="apple-dot"></span>
+                <div></div>
+                <span class="mock-status-icon active"><img src={observerIconUrl} alt="" /></span>
+                <span class="mock-status-icon"></span>
+                <span class="mock-status-icon small"></span>
+              </div>
+              <div class="mock-panel">
+                <div class="mock-panel-head">
+                  <strong>观察者</strong>
+                  <span></span>
+                </div>
+                <div class="mock-session-card warning">
+                  <i></i>
+                  <div><strong>mobile-app</strong><span>Claude Code · 待确认</span></div>
+                  <button>聚焦</button>
+                </div>
+                <div class="mock-session-card ok">
+                  <i></i>
+                  <div><strong>api-server</strong><span>Codex · 待命</span></div>
+                  <button>聚焦</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        {:else if currentOnboardingStep().visual === "signals"}
+          <div class="signals-visual">
+            <div class="signal-demo-card tone-ok"><i></i><strong>存活正常</strong><span>Agent 可识别且无告警</span></div>
+            <div class="signal-demo-card tone-work"><i></i><strong>工作中</strong><span>正在思考或调用工具</span></div>
+            <div class="signal-demo-card tone-warning"><i></i><strong>待确认</strong><span>等待你确认或注意</span></div>
+            <div class="signal-demo-card tone-critical"><i></i><strong>需要处理</strong><span>错误、限流或假死</span></div>
+          </div>
+        {:else if currentOnboardingStep().visual === "alerts"}
+          <div class="alerts-visual">
+            <div class="notification-mock">
+              <div class="notification-icon"><img src={observerIconUrl} alt="" /></div>
+              <div>
+                <strong>观察者</strong>
+                <span>Codex 可能已停在等待确认</span>
+                <em>点击通知后可直接定位到会话详情</em>
+              </div>
+            </div>
+            <div class="focus-mock-card">
+              <div>
+                <span>告警原因</span>
+                <strong>等待用户决策</strong>
+                <p>Agent 已停止执行，正在等待你批准或选择下一步。</p>
+              </div>
+              <button>聚焦窗口</button>
+            </div>
+          </div>
+        {:else}
+          <div class="privacy-visual">
+            <div class="privacy-shield">
+              <span>隐</span>
+            </div>
+            <div class="privacy-field-grid">
+              {#each ["身份", "状态", "风险", "用量", "上下文", "路径", "环境", "时间线"] as field, index}
+                <span class:locked={index > 5}>{field}{index > 5 ? " Pro" : ""}</span>
+              {/each}
+            </div>
+            <div class="privacy-redacted">
+              <span></span><span></span><span></span>
+            </div>
+          </div>
+        {/if}
+      </div>
+
+      <div class="onboarding-copy">
+        <span>{currentOnboardingStep().eyebrow}</span>
+        <h1>{currentOnboardingStep().title}</h1>
+        <p>{currentOnboardingStep().summary}</p>
+        <div class="onboarding-body">
+          {#each currentOnboardingStep().body as paragraph}
+            <p>{paragraph}</p>
+          {/each}
+        </div>
+      </div>
+    </main>
+
+    <footer class="onboarding-footer">
+      <label class="onboarding-check">
+        <input
+          type="checkbox"
+          bind:checked={onboardingDoNotAutoShow}
+          onchange={() => void saveOnboardingPreference()}
+        />
+        以后不再自动显示
+      </label>
+      <div class="onboarding-actions">
+        <button class="onboarding-nav-btn" disabled={onboardingStep === 0} onclick={previousOnboardingStep}>上一步</button>
+        <div class="onboarding-progress" aria-label={`第 ${onboardingStep + 1} 步，共 ${onboardingSteps.length} 步`}>
+          {#each onboardingSteps as step, index}
+            <button
+              class:active={index === onboardingStep}
+              aria-label={step.title}
+              onclick={() => onboardingStep = index}
+            ></button>
+          {/each}
+        </div>
+        <button class="onboarding-nav-btn primary" onclick={nextOnboardingStep}>
+          {onboardingStep === onboardingSteps.length - 1 ? "完成" : "下一步"}
+        </button>
+      </div>
+    </footer>
+  </div>
+{:else if currentWindowLabel === "dashboard"}
   {#if !isProPlan()}
     <div class="dashboard-app locked-dashboard">
       <section class="pro-gate">
@@ -3552,6 +3816,14 @@
         />
       </label>
 
+      <div class="guide-entry">
+        <div>
+          <strong>操作指引</strong>
+          <span>重新查看菜单栏入口、颜色语义、通知和隐私边界</span>
+        </div>
+        <button onclick={openOnboardingGuide}>打开</button>
+      </div>
+
       {:else if settingsTab === "alerts"}
       <label class="switch-row">
         <span>
@@ -3970,6 +4242,591 @@
     user-select: none;
     color: var(--obs-text-solid);
   }
+
+  .onboarding-app {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) 62px;
+    background: #242628;
+    color: rgba(245, 247, 249, 0.92);
+  }
+
+  .onboarding-stage {
+    min-height: 0;
+    display: grid;
+    grid-template-rows: 275px minmax(0, 1fr);
+    padding: 34px 54px 28px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 38%),
+      #242628;
+  }
+
+  .onboarding-visual {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+  }
+
+  .onboarding-copy {
+    width: min(760px, 100%);
+    justify-self: center;
+    text-align: center;
+    padding-top: 28px;
+  }
+
+  .onboarding-copy > span {
+    display: block;
+    color: rgba(78, 202, 255, 0.86);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .onboarding-copy h1 {
+    margin: 9px 0 0;
+    font-size: 35px;
+    line-height: 1.12;
+    letter-spacing: 0;
+    color: rgba(255, 255, 255, 0.88);
+  }
+
+  .onboarding-copy > p {
+    margin: 12px auto 0;
+    max-width: 640px;
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 16px;
+    line-height: 1.48;
+    font-weight: 650;
+  }
+
+  .onboarding-body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    margin-top: 13px;
+    text-align: center;
+  }
+
+  .onboarding-body p {
+    margin: 0;
+    max-width: 640px;
+    color: rgba(255, 255, 255, 0.68);
+    font-size: 16px;
+    line-height: 1.48;
+    font-weight: 650;
+  }
+
+  .onboarding-footer {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 16px;
+    padding: 0 34px;
+    background: rgba(255, 255, 255, 0.135);
+    border-top: 1px solid rgba(255, 255, 255, 0.10);
+    backdrop-filter: blur(18px);
+  }
+
+  .onboarding-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: rgba(255, 255, 255, 0.70);
+    font-size: 13px;
+    font-weight: 650;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .onboarding-check input {
+    width: 15px;
+    height: 15px;
+    accent-color: rgba(78, 202, 255, 0.82);
+    cursor: pointer;
+  }
+
+  .onboarding-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 82px;
+    justify-content: center;
+  }
+
+  .onboarding-progress button {
+    appearance: none;
+    width: 6px;
+    height: 6px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.24);
+    cursor: pointer;
+  }
+
+  .onboarding-progress button.active {
+    width: 20px;
+    border-radius: 999px;
+    background: rgba(78, 202, 255, 0.82);
+    box-shadow: 0 0 12px rgba(78, 202, 255, 0.22);
+  }
+
+  .onboarding-actions {
+    justify-self: center;
+    grid-column: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .onboarding-actions .onboarding-nav-btn {
+    appearance: none;
+    min-width: 76px;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.82);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .onboarding-actions .onboarding-nav-btn:disabled {
+    opacity: 0.34;
+    cursor: default;
+  }
+
+  .onboarding-actions .onboarding-nav-btn.primary {
+    border-color: rgba(78, 202, 255, 0.30);
+    background: rgba(78, 202, 255, 0.22);
+    color: #fff;
+  }
+
+	  .onboarding-actions .onboarding-nav-btn:not(:disabled):hover,
+	  .onboarding-progress button:hover {
+	    filter: brightness(1.08);
+	  }
+
+  .welcome-visual,
+  .menubar-visual,
+  .signals-visual,
+  .alerts-visual,
+  .privacy-visual {
+    width: min(760px, 100%);
+    height: 230px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .welcome-visual {
+    gap: 34px;
+  }
+
+  .observer-icon-large {
+    width: 150px;
+    height: 150px;
+    border-radius: 34px;
+    display: block;
+    object-fit: contain;
+    box-shadow: 0 28px 60px rgba(0, 0, 0, 0.34);
+  }
+
+  .welcome-signal-grid {
+    width: 154px;
+    display: grid;
+    grid-template-columns: repeat(3, 34px);
+    gap: 14px;
+  }
+
+  .mini-signal {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .mini-signal.tone-ok {
+    background: rgba(76, 212, 160, 0.78);
+    box-shadow: 0 0 20px rgba(76, 212, 160, 0.30);
+  }
+
+  .mini-signal.tone-work {
+    background: rgba(255, 154, 60, 0.82);
+    box-shadow: 0 0 20px rgba(255, 154, 60, 0.30);
+  }
+
+  .mini-signal.tone-warning {
+    background: rgba(255, 184, 77, 0.82);
+    box-shadow: 0 0 20px rgba(255, 184, 77, 0.30);
+  }
+
+  .mini-signal.tone-critical {
+    background: rgba(255, 92, 122, 0.86);
+    box-shadow: 0 0 20px rgba(255, 92, 122, 0.30);
+  }
+
+  .mock-display {
+    width: 610px;
+    height: 205px;
+    border-radius: 18px 18px 0 0;
+    border: 2px solid rgba(255, 255, 255, 0.10);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.035));
+    overflow: hidden;
+  }
+
+  .mock-menubar {
+    height: 30px;
+    display: grid;
+    grid-template-columns: 28px 1fr repeat(3, 28px);
+    align-items: center;
+    gap: 8px;
+    padding: 0 14px;
+    background: rgba(8, 10, 12, 0.62);
+  }
+
+  .mock-menubar div {
+    min-width: 0;
+  }
+
+  .apple-dot,
+  .mock-status-icon {
+    display: block;
+    width: 18px;
+    height: 18px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.42);
+  }
+
+  .apple-dot {
+    border-radius: 50%;
+  }
+
+  .mock-status-icon {
+    display: grid;
+    place-items: center;
+    color: rgba(255, 255, 255, 0.86);
+    font-size: 10px;
+    font-weight: 800;
+  }
+
+  .mock-status-icon.active {
+    width: 28px;
+    height: 24px;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.15);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+  }
+
+  .mock-status-icon img {
+    width: 18px;
+    height: 18px;
+    display: block;
+    object-fit: contain;
+  }
+
+  .mock-status-icon.small {
+    width: 22px;
+  }
+
+  .mock-panel {
+    width: 318px;
+    margin: 16px 18px 0 auto;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    background: rgba(20, 25, 31, 0.94);
+    padding: 13px;
+    box-shadow: 0 22px 60px rgba(0, 0, 0, 0.38);
+  }
+
+  .mock-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 9px;
+  }
+
+  .mock-panel-head strong {
+    font-size: 13px;
+  }
+
+  .mock-panel-head span {
+    width: 58px;
+    height: 18px;
+    border-radius: 999px;
+    background: rgba(76, 212, 160, 0.16);
+  }
+
+  .mock-session-card {
+    height: 44px;
+    display: grid;
+    grid-template-columns: 9px 1fr 46px;
+    align-items: center;
+    gap: 8px;
+    margin-top: 7px;
+    border-radius: 9px;
+    padding: 0 9px;
+    background: rgba(255, 255, 255, 0.07);
+  }
+
+  .mock-session-card i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+
+  .mock-session-card.ok i {
+    background: var(--obs-status-ok);
+  }
+
+  .mock-session-card.warning i {
+    background: var(--obs-status-warning);
+  }
+
+  .mock-session-card strong,
+  .mock-session-card span {
+    display: block;
+  }
+
+  .mock-session-card strong {
+    font-size: 11px;
+  }
+
+  .mock-session-card span {
+    margin-top: 2px;
+    color: rgba(255, 255, 255, 0.46);
+    font-size: 9px;
+  }
+
+  .mock-session-card button,
+  .focus-mock-card button {
+    appearance: none;
+    height: 24px;
+    border: 0;
+    border-radius: 7px;
+    background: rgba(78, 202, 255, 0.20);
+    color: rgba(255, 255, 255, 0.84);
+    font: inherit;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .signals-visual {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .signal-demo-card {
+    height: 154px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: rgba(255, 255, 255, 0.06);
+    padding: 20px 14px;
+    text-align: center;
+  }
+
+  .signal-demo-card i {
+    display: block;
+    width: 34px;
+    height: 34px;
+    margin: 0 auto 17px;
+    border-radius: 50%;
+  }
+
+  .signal-demo-card strong,
+  .signal-demo-card span {
+    display: block;
+  }
+
+  .signal-demo-card strong {
+    font-size: 15px;
+    color: rgba(255, 255, 255, 0.88);
+  }
+
+  .signal-demo-card span {
+    margin-top: 9px;
+    color: rgba(255, 255, 255, 0.50);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  .signal-demo-card.tone-ok i { background: var(--obs-status-ok); box-shadow: 0 0 24px rgba(76, 212, 160, 0.36); }
+  .signal-demo-card.tone-work i { background: var(--obs-status-work); box-shadow: 0 0 24px rgba(255, 154, 60, 0.36); }
+  .signal-demo-card.tone-warning i { background: var(--obs-status-warning); box-shadow: 0 0 24px rgba(255, 184, 77, 0.36); }
+  .signal-demo-card.tone-critical i { background: var(--obs-status-critical); box-shadow: 0 0 24px rgba(255, 92, 122, 0.36); }
+
+  .alerts-visual {
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .notification-mock,
+  .focus-mock-card {
+    width: 560px;
+    border-radius: 15px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.075);
+    box-shadow: 0 20px 44px rgba(0, 0, 0, 0.22);
+  }
+
+  .notification-mock {
+    min-height: 78px;
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    gap: 13px;
+    align-items: center;
+    padding: 14px 16px;
+  }
+
+  .notification-icon {
+    width: 42px;
+    height: 42px;
+    display: grid;
+    place-items: center;
+    border-radius: 10px;
+    background: #121920;
+    color: #fff;
+    font-weight: 850;
+  }
+
+  .notification-icon img {
+    width: 32px;
+    height: 32px;
+    display: block;
+    object-fit: contain;
+  }
+
+  .notification-mock strong,
+  .notification-mock span,
+  .notification-mock em {
+    display: block;
+  }
+
+  .notification-mock strong {
+    font-size: 12px;
+  }
+
+  .notification-mock span {
+    margin-top: 4px;
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.82);
+  }
+
+  .notification-mock em {
+    margin-top: 4px;
+    font-style: normal;
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.42);
+  }
+
+  .focus-mock-card {
+    min-height: 96px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 18px;
+    padding: 16px;
+  }
+
+  .focus-mock-card span,
+  .focus-mock-card strong,
+  .focus-mock-card p {
+    display: block;
+  }
+
+  .focus-mock-card span {
+    color: var(--obs-status-warning);
+    font-size: 11px;
+  }
+
+  .focus-mock-card strong {
+    margin-top: 5px;
+    font-size: 18px;
+  }
+
+  .focus-mock-card p {
+    margin: 6px 0 0;
+    color: rgba(255, 255, 255, 0.50);
+    font-size: 12px;
+  }
+
+  .focus-mock-card button {
+    width: 88px;
+    height: 32px;
+  }
+
+  .privacy-visual {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .privacy-shield {
+    width: 78px;
+    height: 88px;
+    display: grid;
+    place-items: center;
+    border-radius: 26px 26px 34px 34px;
+    background:
+      linear-gradient(145deg, rgba(76, 212, 160, 0.28), rgba(78, 202, 255, 0.18)),
+      rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(76, 212, 160, 0.28);
+    box-shadow: 0 22px 50px rgba(76, 212, 160, 0.16);
+    color: rgba(255, 255, 255, 0.90);
+    font-size: 29px;
+    font-weight: 850;
+  }
+
+  .privacy-field-grid {
+    display: grid;
+    grid-template-columns: repeat(4, auto);
+    gap: 8px;
+  }
+
+  .privacy-field-grid span {
+    min-width: 68px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 999px;
+    background: rgba(78, 202, 255, 0.13);
+    border: 1px solid rgba(78, 202, 255, 0.24);
+    color: rgba(255, 255, 255, 0.78);
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .privacy-field-grid span.locked {
+    color: rgba(255, 222, 174, 0.78);
+    background: rgba(255, 184, 77, 0.10);
+    border-color: rgba(255, 184, 77, 0.22);
+  }
+
+  .privacy-redacted {
+    width: 410px;
+    display: grid;
+    gap: 8px;
+    padding: 14px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .privacy-redacted span {
+    height: 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  .privacy-redacted span:nth-child(2) { width: 72%; }
+  .privacy-redacted span:nth-child(3) { width: 48%; }
 
   .dashboard-app {
     width: 100vw;
@@ -5591,6 +6448,7 @@
   .hidden-input-row button:focus-visible,
   .statusline-box button:focus-visible,
   .test-notification-btn:focus-visible,
+  .guide-entry button:focus-visible,
   .pro-setting-block:focus-visible {
     outline: 1px solid rgba(78, 202, 255, 0.72);
     outline-offset: 2px;
@@ -6976,6 +7834,56 @@
     height: 20px;
     flex-shrink: 0;
     accent-color: var(--obs-status-ok);
+  }
+
+  .guide-entry {
+    min-height: 54px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+    padding: 10px;
+    border-radius: 8px;
+    background: var(--obs-surface-card-muted);
+    border: 0.5px solid var(--obs-border-soft);
+  }
+
+  .guide-entry strong,
+  .guide-entry span {
+    display: block;
+  }
+
+  .guide-entry strong {
+    font-size: 12px;
+    line-height: 1.25;
+    color: var(--obs-text-strong);
+  }
+
+  .guide-entry span {
+    margin-top: 4px;
+    color: var(--obs-text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .guide-entry button {
+    appearance: none;
+    height: 28px;
+    padding: 0 12px;
+    border-radius: var(--obs-control-radius);
+    border: 0.5px solid var(--obs-status-info-border);
+    background: var(--obs-status-info-soft);
+    color: var(--obs-text-strong);
+    font: inherit;
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  .guide-entry button:hover {
+    border-color: rgba(78, 202, 255, 0.34);
+    background: rgba(78, 202, 255, 0.16);
+    color: rgba(255, 255, 255, 0.88);
   }
 
   .compact-switch {

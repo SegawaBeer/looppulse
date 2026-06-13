@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Allow the menubar panel to use core Tauri APIs and desktop notifications.",
-  "windows": ["panel", "dashboard"],
+  "windows": ["panel", "dashboard", "onboarding"],
   "permissions": ["core:default", "notification:default"]
 }
