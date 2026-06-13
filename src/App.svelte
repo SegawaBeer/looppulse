@@ -517,6 +517,11 @@
       currentWindowLabel = getCurrentWindow().label;
       logFrontend(`App window label=${currentWindowLabel}`);
 
+      const isPanelWindow = currentWindowLabel === "panel";
+      const isDashboardWindow = currentWindowLabel === "dashboard";
+      const isOnboardingWindow = currentWindowLabel === "onboarding";
+      const shouldObserveSessions = isPanelWindow || isDashboardWindow;
+
       try {
         listViewMode = loadListViewMode();
         logFrontend(`App listViewMode=${listViewMode}`);
@@ -527,153 +532,155 @@
 
       void loadSettings();
       logFrontend("App loadSettings scheduled");
-      void loadClaudeStatusLineStatus();
-      logFrontend("App loadClaudeStatusLineStatus scheduled");
 
-      listen<AgentSession[]>("agent-update", (event) => {
-        applySessionUpdate(event.payload);
-      })
-        .then((unlisten) => unlisteners.push(unlisten))
-        .catch((error) => logFrontend(`listen agent-update failed ${formatError(error)}`));
-      logFrontend("App listen agent-update scheduled");
-
-      listen<MonitorSnapshot>("monitor-update", (event) => {
-        applyMonitorUpdate(event.payload);
-      })
-        .then((unlisten) => unlisteners.push(unlisten))
-        .catch((error) => logFrontend(`listen monitor-update failed ${formatError(error)}`));
-      logFrontend("App listen monitor-update scheduled");
-
-      listen<SessionEvent[]>("event-history-update", (event) => {
-        eventHistory = normalizeEventHistory(event.payload);
-      })
-        .then((unlisten) => unlisteners.push(unlisten))
-        .catch((error) => logFrontend(`listen event-history-update failed ${formatError(error)}`));
-      logFrontend("App listen event-history-update scheduled");
-
-      listen<number>("panel-will-show", (event) => {
-        panelAnchorX = event.payload ?? 50;
-        preparePanelAnimation();
-      })
-        .then((unlisten) => unlisteners.push(unlisten))
-        .catch((error) => logFrontend(`listen panel-will-show failed ${formatError(error)}`));
-      logFrontend("App listen panel-will-show scheduled");
-
-      listen<number>("panel-shown", (event) => {
-        panelAnchorX = event.payload ?? 50;
-        startPanelAnimation();
-        if (currentWindowLabel === "panel") {
-          void consumePendingNotificationTarget("panel-shown");
-        }
-      })
-        .then((unlisten) => unlisteners.push(unlisten))
-        .catch((error) => logFrontend(`listen panel-shown failed ${formatError(error)}`));
-      logFrontend("App listen panel-shown scheduled");
-
-      listen<void>("panel-hidden", () => {
-        if (currentWindowLabel === "panel") {
-          resetPanelAnimation();
-        }
-      })
-        .then((unlisten) => unlisteners.push(unlisten))
-        .catch((error) => logFrontend(`listen panel-hidden failed ${formatError(error)}`));
-      logFrontend("App listen panel-hidden scheduled");
-
-      listen<void>("onboarding-show", () => {
-        if (currentWindowLabel === "onboarding") {
-          onboardingStep = 0;
-        }
-      })
-        .then((unlisten) => unlisteners.push(unlisten))
-        .catch((error) => logFrontend(`listen onboarding-show failed ${formatError(error)}`));
-      logFrontend("App listen onboarding-show scheduled");
-
-      listen<number>("panel-will-hide", (event) => {
-        if (currentWindowLabel === "panel") {
-          stopPanelAnimation(event.payload);
-        }
-      })
-        .then((unlisten) => unlisteners.push(unlisten))
-        .catch((error) => logFrontend(`listen panel-will-hide failed ${formatError(error)}`));
-      logFrontend("App listen panel-will-hide scheduled");
-
-      listen<void>("notification-target-pending", () => {
-        void consumePendingNotificationTarget("backend-activation");
-      })
-        .then((unlisten) => unlisteners.push(unlisten))
-        .catch((error) => logFrontend(`listen notification-target-pending failed ${formatError(error)}`));
-      logFrontend("App listen notification-target-pending scheduled");
-
-      getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-        if (focused) void consumePendingNotificationTarget("window-focus");
-      })
-        .then((unlisten) => unlisteners.push(unlisten))
-        .catch((error) => logFrontend(`window focus listener failed ${formatError(error)}`));
-      logFrontend("App window focus listener scheduled");
-
-      const focusHandler = () => {
-        void consumePendingNotificationTarget("dom-focus");
-      };
-      const visibilityHandler = () => {
-        if (document.visibilityState === "visible") {
-          void consumePendingNotificationTarget("visibility");
-        }
-      };
-      window.addEventListener("focus", focusHandler);
-      document.addEventListener("visibilitychange", visibilityHandler);
-      unlisteners.push(() => {
-        window.removeEventListener("focus", focusHandler);
-        document.removeEventListener("visibilitychange", visibilityHandler);
-      });
-
-      try {
-        onAction((notification) => {
-          void handleNotificationAction(notification as NotificationActionPayload);
-        })
-          .then((listener) => unlisteners.push(() => listener.unregister()))
-          .catch((error) => {
-            logFrontend(`notification action listener unavailable ${formatError(error)}`);
-            console.warn("notification action listener unavailable", error);
-          });
-      } catch (error) {
-        logFrontend(`notification action listener threw ${formatError(error)}`);
-        console.warn("notification action listener unavailable", error);
+      if (isPanelWindow) {
+        void loadClaudeStatusLineStatus();
+        logFrontend("App loadClaudeStatusLineStatus scheduled");
       }
-      logFrontend("App notification action listener scheduled");
 
-      invoke<MonitorSnapshot>("get_monitor_snapshot")
-        .then(applyMonitorUpdate)
-        .catch((error) => {
-          logFrontend(`get_monitor_snapshot failed ${formatError(error)}`);
-          console.error("get_monitor_snapshot failed", error);
-          invoke<AgentSession[]>("get_sessions")
-            .then((result) => {
-              applySessionUpdate(result);
-            })
-            .catch((fallbackError) => {
-              logFrontend(`get_sessions failed ${formatError(fallbackError)}`);
-              console.error("get_sessions failed", fallbackError);
-            });
-        });
-      logFrontend("App get_monitor_snapshot scheduled");
-
-      invoke<SessionEvent[]>("get_event_history", { limit: 200 })
-        .then((result) => {
-          eventHistory = normalizeEventHistory(result);
+      if (shouldObserveSessions) {
+        listen<AgentSession[]>("agent-update", (event) => {
+          applySessionUpdate(event.payload);
         })
-        .catch((error) => {
-          logFrontend(`get_event_history failed ${formatError(error)}`);
-          console.error("get_event_history failed", error);
-        });
-      logFrontend("App get_event_history scheduled");
+          .then((unlisten) => unlisteners.push(unlisten))
+          .catch((error) => logFrontend(`listen agent-update failed ${formatError(error)}`));
+        logFrontend("App listen agent-update scheduled");
 
-      logFrontend("App before panel_ready");
-      invoke("panel_ready")
-        .then(() => logFrontend("App panel_ready sent"))
-        .catch((error) => {
-          logFrontend(`panel_ready failed ${formatError(error)}`);
-          console.error("panel_ready failed", error);
+        listen<MonitorSnapshot>("monitor-update", (event) => {
+          applyMonitorUpdate(event.payload);
+        })
+          .then((unlisten) => unlisteners.push(unlisten))
+          .catch((error) => logFrontend(`listen monitor-update failed ${formatError(error)}`));
+        logFrontend("App listen monitor-update scheduled");
+
+        listen<SessionEvent[]>("event-history-update", (event) => {
+          eventHistory = normalizeEventHistory(event.payload);
+        })
+          .then((unlisten) => unlisteners.push(unlisten))
+          .catch((error) => logFrontend(`listen event-history-update failed ${formatError(error)}`));
+        logFrontend("App listen event-history-update scheduled");
+
+        invoke<MonitorSnapshot>("get_monitor_snapshot")
+          .then(applyMonitorUpdate)
+          .catch((error) => {
+            logFrontend(`get_monitor_snapshot failed ${formatError(error)}`);
+            console.error("get_monitor_snapshot failed", error);
+            invoke<AgentSession[]>("get_sessions")
+              .then((result) => {
+                applySessionUpdate(result);
+              })
+              .catch((fallbackError) => {
+                logFrontend(`get_sessions failed ${formatError(fallbackError)}`);
+                console.error("get_sessions failed", fallbackError);
+              });
+          });
+        logFrontend("App get_monitor_snapshot scheduled");
+
+        invoke<SessionEvent[]>("get_event_history", { limit: 200 })
+          .then((result) => {
+            eventHistory = normalizeEventHistory(result);
+          })
+          .catch((error) => {
+            logFrontend(`get_event_history failed ${formatError(error)}`);
+            console.error("get_event_history failed", error);
+          });
+        logFrontend("App get_event_history scheduled");
+      }
+
+      if (isPanelWindow) {
+        listen<number>("panel-will-show", (event) => {
+          panelAnchorX = event.payload ?? 50;
+          preparePanelAnimation();
+        })
+          .then((unlisten) => unlisteners.push(unlisten))
+          .catch((error) => logFrontend(`listen panel-will-show failed ${formatError(error)}`));
+        logFrontend("App listen panel-will-show scheduled");
+
+        listen<number>("panel-shown", (event) => {
+          panelAnchorX = event.payload ?? 50;
+          startPanelAnimation();
+          void consumePendingNotificationTarget("panel-shown");
+        })
+          .then((unlisten) => unlisteners.push(unlisten))
+          .catch((error) => logFrontend(`listen panel-shown failed ${formatError(error)}`));
+        logFrontend("App listen panel-shown scheduled");
+
+        listen<void>("panel-hidden", () => {
+          resetPanelAnimation();
+        })
+          .then((unlisten) => unlisteners.push(unlisten))
+          .catch((error) => logFrontend(`listen panel-hidden failed ${formatError(error)}`));
+        logFrontend("App listen panel-hidden scheduled");
+
+        listen<number>("panel-will-hide", (event) => {
+          stopPanelAnimation(event.payload);
+        })
+          .then((unlisten) => unlisteners.push(unlisten))
+          .catch((error) => logFrontend(`listen panel-will-hide failed ${formatError(error)}`));
+        logFrontend("App listen panel-will-hide scheduled");
+
+        listen<void>("notification-target-pending", () => {
+          void consumePendingNotificationTarget("backend-activation");
+        })
+          .then((unlisten) => unlisteners.push(unlisten))
+          .catch((error) => logFrontend(`listen notification-target-pending failed ${formatError(error)}`));
+        logFrontend("App listen notification-target-pending scheduled");
+
+        getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+          if (focused) void consumePendingNotificationTarget("window-focus");
+        })
+          .then((unlisten) => unlisteners.push(unlisten))
+          .catch((error) => logFrontend(`window focus listener failed ${formatError(error)}`));
+        logFrontend("App window focus listener scheduled");
+
+        const focusHandler = () => {
+          void consumePendingNotificationTarget("dom-focus");
+        };
+        const visibilityHandler = () => {
+          if (document.visibilityState === "visible") {
+            void consumePendingNotificationTarget("visibility");
+          }
+        };
+        window.addEventListener("focus", focusHandler);
+        document.addEventListener("visibilitychange", visibilityHandler);
+        unlisteners.push(() => {
+          window.removeEventListener("focus", focusHandler);
+          document.removeEventListener("visibilitychange", visibilityHandler);
         });
+
+        try {
+          onAction((notification) => {
+            void handleNotificationAction(notification as NotificationActionPayload);
+          })
+            .then((listener) => unlisteners.push(() => listener.unregister()))
+            .catch((error) => {
+              logFrontend(`notification action listener unavailable ${formatError(error)}`);
+              console.warn("notification action listener unavailable", error);
+            });
+        } catch (error) {
+          logFrontend(`notification action listener threw ${formatError(error)}`);
+          console.warn("notification action listener unavailable", error);
+        }
+        logFrontend("App notification action listener scheduled");
+
+        logFrontend("App before panel_ready");
+        invoke("panel_ready")
+          .then(() => logFrontend("App panel_ready sent"))
+          .catch((error) => {
+            logFrontend(`panel_ready failed ${formatError(error)}`);
+            console.error("panel_ready failed", error);
+          });
+      }
+
+      if (isOnboardingWindow) {
+        listen<void>("onboarding-show", () => {
+          onboardingStep = 0;
+          onboardingDoNotAutoShow = settings.onboardingCompleted;
+        })
+          .then((unlisten) => unlisteners.push(unlisten))
+          .catch((error) => logFrontend(`listen onboarding-show failed ${formatError(error)}`));
+        logFrontend("App listen onboarding-show scheduled");
+      }
     } catch (error) {
       logFrontend(`App onMount failed ${formatError(error)}`);
       console.error("App onMount failed", error);
