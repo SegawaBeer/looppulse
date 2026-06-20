@@ -1,7 +1,7 @@
 use super::{
     base_capabilities, content_stats, free_tier, now_seconds, project_name_with_fallback,
-    safe_task_title, summary_hint, AgentPlugin, AgentSession, ConversationSummaryDraft, MemoryInfo,
-    ProcessInfo, ToolCall,
+    push_recent_sample, safe_task_title, summary_hint, AgentPlugin, AgentSession,
+    ConversationSummaryDraft, MemoryInfo, ProcessInfo, ToolCall,
 };
 use crate::settings::AppSettings;
 use serde_json::Value;
@@ -113,6 +113,7 @@ fn parse_rollout(
     let mut output_tokens = 0_u64;
     let mut cache_read_tokens = 0_u64;
     let cache_create_tokens = 0_u64;
+    let mut previous_reported_tokens = 0_u64;
     let mut token_history = Vec::new();
     let mut context_history = Vec::new();
     let mut last_context_tokens = 0_u64;
@@ -194,15 +195,23 @@ fn parse_rollout(
                                 input_tokens = read_u64(total, "input_tokens");
                                 output_tokens = read_u64(total, "output_tokens");
                                 cache_read_tokens = read_u64(total, "cached_input_tokens");
-                                let turn_tokens = input_tokens.saturating_add(output_tokens);
-                                if turn_tokens > 0 && token_history.len() < 200 {
-                                    token_history.push(turn_tokens);
-                                }
+                                let reported_tokens = input_tokens
+                                    .saturating_add(output_tokens)
+                                    .saturating_add(cache_read_tokens);
+                                let turn_tokens = if previous_reported_tokens > 0 {
+                                    if reported_tokens >= previous_reported_tokens {
+                                        reported_tokens.saturating_sub(previous_reported_tokens)
+                                    } else {
+                                        input_tokens.saturating_add(output_tokens)
+                                    }
+                                } else {
+                                    input_tokens.saturating_add(output_tokens)
+                                };
+                                push_recent_sample(&mut token_history, turn_tokens, 200);
+                                previous_reported_tokens = reported_tokens;
                                 last_context_tokens =
                                     input_tokens.saturating_add(cache_read_tokens);
-                                if last_context_tokens > 0 && context_history.len() < 200 {
-                                    context_history.push(last_context_tokens);
-                                }
+                                push_recent_sample(&mut context_history, last_context_tokens, 200);
                             }
                             if let Some(window) = payload
                                 .get("info")
@@ -658,6 +667,29 @@ mod tests {
             session.conversation_summary.title.as_deref(),
             Some("使用浏览器工具")
         );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn token_history_uses_incremental_codex_usage_samples() {
+        let dir = unique_temp_dir("codex-token-delta");
+        fs::create_dir_all(&dir).unwrap();
+        let rollout = dir.join("rollout-token-delta.jsonl");
+        let content = r#"{"timestamp":"__T0__","type":"session_meta","payload":{"id":"codex-token-delta","cwd":"/Users/test/codex"}}
+{"timestamp":"__T1__","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10000,"cached_input_tokens":5000,"output_tokens":1000}}}}
+{"timestamp":"__T2__","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":16000,"cached_input_tokens":7000,"output_tokens":1300}}}}"#
+            .replace("__T0__", &test_timestamp(-3))
+            .replace("__T1__", &test_timestamp(-2))
+            .replace("__T2__", &test_timestamp(0));
+        fs::write(&rollout, content).unwrap();
+
+        let session = parse_rollout(&rollout, &[], &HashMap::new()).unwrap();
+
+        assert_eq!(session.token_history, vec![11000, 8300]);
+        assert_eq!(session.input_tokens, 16000);
+        assert_eq!(session.cache_read_tokens, 7000);
+        assert_eq!(session.output_tokens, 1300);
 
         let _ = fs::remove_dir_all(dir);
     }

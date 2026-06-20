@@ -713,7 +713,7 @@
       contextCriticalPercent: 95,
       stalledWarningMinutes: 15,
       stalledCriticalMinutes: 30,
-      tokenWarningThreshold: 1_000_000,
+      tokenWarningThreshold: 80_000,
       historyEnabled: true,
       historyRetentionDays: 30,
       onboardingCompleted: false
@@ -891,7 +891,7 @@
     next.contextCriticalPercent = clampNumber(next.contextCriticalPercent, next.contextWarningPercent + 1, 100);
     next.stalledWarningMinutes = clampNumber(next.stalledWarningMinutes, 3, 120);
     next.stalledCriticalMinutes = clampNumber(next.stalledCriticalMinutes, next.stalledWarningMinutes + 1, 240);
-    next.tokenWarningThreshold = clampNumber(next.tokenWarningThreshold, 10_000, 50_000_000);
+    next.tokenWarningThreshold = clampNumber(next.tokenWarningThreshold, 10_000, 5_000_000);
     next.historyRetentionDays = clampNumber(next.historyRetentionDays, 1, 365);
     next.pathDisplayMode = ["private", "compact", "full"].includes(next.pathDisplayMode)
       ? next.pathDisplayMode
@@ -1475,8 +1475,9 @@
   }
 
   function setTokenThreshold(value: number) {
-    if (!requirePro("累计用量阈值细调", "alerts")) return;
+    if (!requirePro("用量突增阈值细调", "alerts")) return;
     settings.tokenWarningThreshold = value;
+    showSettingsFeedback("异常消耗阈值已更新；累计用量仅作为统计展示。", "alerts", "ok");
     void saveSettings();
   }
 
@@ -1733,6 +1734,17 @@
       + session.output_tokens
       + (session.cache_read_tokens ?? 0)
       + (session.cache_create_tokens ?? 0);
+  }
+
+  function peakTurnTokens(session: AgentSession): number {
+    return Math.max(0, ...(session.token_history ?? []));
+  }
+
+  function usageSamplingLabel(session: AgentSession): string {
+    const sampleCount = session.token_history?.length ?? 0;
+    const peak = peakTurnTokens(session);
+    if (sampleCount === 0 || peak === 0) return "暂无增量采样";
+    return `峰值 ${formatTokens(peak)} · ${sampleCount} 次采样`;
   }
 
   function recentToolCalls(session: AgentSession, limit = 6): ToolCall[] {
@@ -2280,7 +2292,8 @@
       `运行时长：${formatDuration(session.started_at)}`,
       `上下文：${contextLabel(session)} (${session.context_is_estimated ? "估算" : "当前"})`,
       `权限观察：${(session.permission_observations ?? []).map((item) => `${item.label}/${permissionLevelLabel(item.level)}`).join(", ") || "未发现"}`,
-      `累计用量：${formatTokens(totalTokens(session)) || "0"}`,
+      `累计用量：${formatTokens(totalTokens(session)) || "0"}（仅统计，不触发告警）`,
+      `最近用量采样：${usageSamplingLabel(session)}`,
       `会话摘要：${summary.join(" · ") || "暂无低敏摘要"}`,
       `过程调用：${(session.tool_calls ?? []).length}`,
       `调用错误：${(session.tool_calls ?? []).filter((tool) => tool.status === "error").map((tool) => [displayToolName(tool.name), toolErrorLabel(tool.error_kind)].filter(Boolean).join(":")).filter(Boolean).join(", ") || "未发现"}`,
@@ -2417,7 +2430,8 @@
         cacheRead: session.cache_read_tokens,
         cacheCreate: session.cache_create_tokens,
         turnCount: session.token_history?.length ?? 0,
-        peakTurnTokens: Math.max(0, ...(session.token_history ?? []))
+        peakTurnTokens: peakTurnTokens(session),
+        alertBasis: "recent_spike_only"
       };
     }
     if (fields.has("context")) {
@@ -2700,6 +2714,32 @@
     if (activeCount > 0) return { label: "工作中", color: "#FF9A3C" };
     if (warningCount > 0) return { label: "需查看", color: "#FFB84D" };
     return { label: "待命", color: "#4CD4A0" };
+  }
+
+  function overviewTargetLine(): string {
+    if (totalCount === 0) return "等待 Agent 会话";
+    if (primaryAlert) {
+      return `${sessionTitle(primaryAlert.session)} · ${primaryAlert.risk.title}`;
+    }
+
+    const activeSessions = sessions.filter((session) => wasActive(session.status));
+    if (activeSessions.length > 0) {
+      return sessionNamesLine(activeSessions, activeSessions.length);
+    }
+
+    const warningSessions = sessions.filter((session) => session.risk_level === "warning");
+    if (warningSessions.length > 0) {
+      return sessionNamesLine(warningSessions, warningSessions.length);
+    }
+
+    return sessionNamesLine(sessions, totalCount);
+  }
+
+  function sessionNamesLine(source: AgentSession[], total: number): string {
+    const names = source.slice(0, 2).map(sessionTitle).filter(Boolean);
+    if (names.length === 0) return `${total} 个会话`;
+    const suffix = total > names.length ? ` 等 ${total} 个` : "";
+    return `${names.join("、")}${suffix}`;
   }
 
   function overallTone(): "ok" | "work" | "warning" | "critical" | "neutral" {
@@ -3068,7 +3108,7 @@
               </div>
               <div class="inspector-grid">
                 <div><span>上下文</span><strong>{contextLabel(selectedSession)}</strong><em>{selectedSession.context_is_estimated ? "估算值" : "当前窗口"}</em></div>
-                <div><span>累计用量</span><strong>{formatTokens(totalTokens(selectedSession)) || "0"}</strong><em>输入 {formatTokens(selectedSession.input_tokens) || "0"}</em></div>
+                <div><span>累计用量</span><strong>{formatTokens(totalTokens(selectedSession)) || "0"}</strong><em>{usageSamplingLabel(selectedSession)}</em></div>
                 <div><span>运行</span><strong>{formatDuration(selectedSession.started_at)}</strong><em>PID {selectedSession.pid ?? "—"}</em></div>
                 <div><span>端口</span><strong>{selectedSession.ports?.length ?? 0}</strong><em>{portsSummary(selectedSession.ports)}</em></div>
               </div>
@@ -3316,6 +3356,11 @@
   {#if totalCount > 0 && !selectedSession}
     <section class={`panel-overview tone-${overallTone()}`}>
       <div class={`overview-monitor-card panel-pop-item tone-${overallTone()}`} style="--pop-delay:74ms">
+        <div class="overview-monitor-copy">
+          <span>当前态势</span>
+          <strong style="color:{overallStatus().color}">{overallStatus().label}</strong>
+          <em title={overviewTargetLine()}>{overviewTargetLine()}</em>
+        </div>
         <div class="overview-signal-grid" aria-label={`Agent 指示灯：${signalSessionCount()} 个会话`}>
           {#each overviewSignalCells() as cell (cell.key)}
             <span
@@ -3380,7 +3425,7 @@
           <div class="detail-stat">
             <span>累计用量</span>
             <strong>{formatTokens(totalTokens(selectedSession)) || "0"}</strong>
-            <em>输入 {formatTokens(selectedSession.input_tokens) || "0"} · 输出 {formatTokens(selectedSession.output_tokens) || "0"}</em>
+            <em>{usageSamplingLabel(selectedSession)}</em>
           </div>
           <div class="detail-stat">
             <span>运行</span>
@@ -3888,16 +3933,16 @@
             />
           </label>
           <label>
-            <span>累计用量</span>
+            <span>用量突增</span>
             <select
               disabled={!isProPlan()}
               bind:value={settings.tokenWarningThreshold}
               onchange={() => setTokenThreshold(settings.tokenWarningThreshold)}
             >
-              <option value={500000}>500k</option>
-              <option value={1000000}>1M</option>
-              <option value={3000000}>3M</option>
-              <option value={10000000}>10M</option>
+              <option value={40000}>40k</option>
+              <option value={80000}>80k</option>
+              <option value={150000}>150k</option>
+              <option value={300000}>300k</option>
             </select>
           </label>
         </div>
@@ -4153,7 +4198,7 @@
         发送测试通知
       </button>
       <p class="settings-note">
-        触发：新高危/注意风险、限流、错误、工作中会话停下、孤儿端口、端口冲突或 quota 接近耗尽；隐藏规则会同时影响面板和后台状态图标。
+        触发：新高危/注意风险、限流、错误、工作中会话停下、孤儿端口、端口冲突、用量突增或 quota 接近耗尽；累计用量只作为统计展示。
       </p>
       {/if}
     </div>
@@ -6060,11 +6105,12 @@
   .overview-monitor-card {
     width: 100%;
     max-width: 100%;
-    min-height: 64px;
-    display: flex;
+    min-height: 72px;
+    display: grid;
+    grid-template-columns: minmax(102px, 1fr) minmax(208px, 224px);
     align-items: center;
-    justify-content: center;
-    padding: 10px 12px;
+    gap: 14px;
+    padding: 10px 13px 10px 12px;
     border-radius: 11px;
     border: 0.5px solid var(--obs-border-soft);
     background: rgba(255, 255, 255, 0.052);
@@ -6095,6 +6141,9 @@
     background: rgba(255, 255, 255, 0.045);
   }
 
+  .overview-monitor-copy,
+  .overview-monitor-copy span,
+  .overview-monitor-copy em,
   .overview-metric span,
   .overview-metric em {
     display: block;
@@ -6105,15 +6154,37 @@
     font-style: normal;
   }
 
+  .overview-monitor-copy span {
+    font-size: 10px;
+    color: var(--obs-text-muted);
+  }
+
+  .overview-monitor-copy strong {
+    display: block;
+    margin-top: 3px;
+    font-size: 21px;
+    line-height: 1.08;
+    letter-spacing: 0;
+  }
+
+  .overview-monitor-copy em {
+    margin-top: 5px;
+    font-size: 10px;
+    color: var(--obs-text-secondary);
+  }
+
   .overview-signal-grid {
     min-width: 0;
-    width: min(100%, 324px);
+    justify-self: end;
+    align-self: center;
+    width: 100%;
     display: grid;
     grid-template-columns: repeat(10, 15px);
     grid-auto-rows: 15px;
-    justify-content: space-between;
-    gap: 6px 4px;
-    padding: 2px;
+    justify-content: end;
+    align-content: center;
+    gap: 6px 6px;
+    padding: 1px 0;
   }
 
   .overview-signal-cell {

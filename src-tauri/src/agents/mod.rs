@@ -240,6 +240,17 @@ pub(crate) fn safe_task_title(task: Option<&str>) -> Option<String> {
     Some(truncate_metadata_label(task, 48))
 }
 
+pub(crate) fn push_recent_sample(samples: &mut Vec<u64>, value: u64, max_len: usize) {
+    if value == 0 || max_len == 0 {
+        return;
+    }
+    if samples.len() >= max_len {
+        let overflow = samples.len() + 1 - max_len;
+        samples.drain(0..overflow);
+    }
+    samples.push(value);
+}
+
 fn title_for_phase(phase: &str) -> Option<String> {
     let title = match phase {
         "tool" => "工具执行中",
@@ -1856,11 +1867,6 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
     let mut risks = Vec::new();
     let now = now_seconds();
     let inactive_secs = now.saturating_sub(session.last_activity_at);
-    let total_tokens = session.input_tokens
-        + session.output_tokens
-        + session.cache_read_tokens
-        + session.cache_create_tokens;
-
     if inactive_secs >= settings.stalled_critical_minutes as i64 * 60
         && matches!(session.status.as_str(), "thinking" | "executing" | "busy")
     {
@@ -1906,26 +1912,22 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
         ));
     }
 
-    if total_tokens >= settings.token_warning_threshold {
+    if let Some(spike) = token_spike_signal(session, settings.token_warning_threshold) {
         risks.push(risk(
-            "token_heavy",
+            "token_spike",
             "warning",
-            "Token 用量偏高",
+            "用量突增",
+            "最近一次 token 增量明显高于该会话近期基线，可能出现重复上下文或异常循环。",
             &format!(
-                "该会话累计 token 已超过 {}，适合作为费用或额度异常提醒。",
-                format_token_threshold(settings.token_warning_threshold)
+                "最近增量：{}；近期中位数：{}；阈值：{}。",
+                format_token_threshold(spike.latest),
+                format_token_threshold(spike.baseline),
+                format_token_threshold(spike.threshold)
             ),
-            &format!(
-                "累计：{}；输入：{}；输出：{}；缓存读：{}。",
-                format_token_threshold(total_tokens),
-                format_token_threshold(session.input_tokens),
-                format_token_threshold(session.output_tokens),
-                format_token_threshold(session.cache_read_tokens)
-            ),
-            "如果用量不符合预期，暂停长任务并查看最近工具调用和对话摘要。",
+            "聚焦 Agent 查看是否在重复读取、反复执行工具或持续塞入大段上下文。",
             "token_usage",
-            "high",
-            Some("token_threshold".to_string()),
+            "medium",
+            Some("token_spike".to_string()),
             true,
         ));
     }
@@ -2065,6 +2067,48 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
     }
 
     risks
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TokenSpikeSignal {
+    latest: u64,
+    baseline: u64,
+    threshold: u64,
+}
+
+fn token_spike_signal(session: &AgentSession, threshold: u64) -> Option<TokenSpikeSignal> {
+    let latest = *session.token_history.last()?;
+    let previous = &session.token_history[..session.token_history.len().saturating_sub(1)];
+    if previous.len() < 3 {
+        return None;
+    }
+
+    let baseline = median_token_sample(previous)?;
+    let minimum = threshold.max(10_000);
+    let relative_threshold = baseline.saturating_mul(3);
+    let effective_threshold = minimum.max(relative_threshold);
+    if latest >= effective_threshold {
+        Some(TokenSpikeSignal {
+            latest,
+            baseline,
+            threshold: effective_threshold,
+        })
+    } else {
+        None
+    }
+}
+
+fn median_token_sample(samples: &[u64]) -> Option<u64> {
+    let mut values = samples
+        .iter()
+        .copied()
+        .filter(|value| *value > 0)
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    Some(values[values.len() / 2])
 }
 
 fn risk(
@@ -2240,17 +2284,39 @@ mod tests {
     }
 
     #[test]
-    fn token_warning_uses_configured_threshold() {
+    fn cumulative_tokens_do_not_create_usage_alerts() {
         let mut settings = AppSettings::default();
-        settings.token_warning_threshold = 42_000;
+        settings.token_warning_threshold = 100_000;
         let mut session = sample_session();
-        session.input_tokens = 42_000;
+        session.input_tokens = 50_000_000;
+        session.output_tokens = 10_000_000;
+        session.cache_read_tokens = 20_000_000;
+        session.token_history = vec![8_000, 9_000, 7_500, 8_500];
 
         let risks = derive_risks(&session, &settings);
 
-        assert!(risks
+        assert!(!risks
             .iter()
-            .any(|risk| risk.kind == "token_heavy" && risk.severity == "warning"));
+            .any(|risk| risk.kind == "token_spike" || risk.kind == "token_heavy"));
+    }
+
+    #[test]
+    fn token_warning_uses_recent_spike_not_cumulative_total() {
+        let mut settings = AppSettings::default();
+        settings.token_warning_threshold = 40_000;
+        let mut session = sample_session();
+        session.input_tokens = 5_000_000;
+        session.token_history = vec![9_000, 10_000, 11_000, 12_000, 45_000];
+
+        let risks = derive_risks(&session, &settings);
+        let risk = risks
+            .iter()
+            .find(|risk| risk.kind == "token_spike")
+            .unwrap();
+
+        assert_eq!(risk.severity, "warning");
+        assert_eq!(risk.title, "用量突增");
+        assert!(risk.evidence.contains("最近增量"));
     }
 
     #[test]
@@ -2313,7 +2379,7 @@ mod tests {
     fn free_plan_locks_pro_risks_out_of_health_state() {
         let settings = AppSettings::default();
         let mut session = sample_session();
-        session.input_tokens = settings.token_warning_threshold;
+        session.token_history = vec![9_000, 10_000, 11_000, 12_000, 1_500_000];
 
         let session = finalize_session(
             session,
@@ -2334,7 +2400,7 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.plan = "pro".to_string();
         let mut session = sample_session();
-        session.input_tokens = settings.token_warning_threshold;
+        session.token_history = vec![9_000, 10_000, 11_000, 12_000, 1_500_000];
 
         let session = finalize_session(
             session,
@@ -2349,7 +2415,7 @@ mod tests {
         assert!(session
             .risks
             .iter()
-            .any(|risk| risk.kind == "token_heavy" && risk.is_pro));
+            .any(|risk| risk.kind == "token_spike" && risk.is_pro));
         assert_eq!(session.risk_level, "warning");
     }
 

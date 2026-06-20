@@ -1,7 +1,8 @@
 use super::{
     base_capabilities, content_stats, free_tier, now_seconds, project_name_with_fallback,
-    safe_task_title, summary_hint, AgentPlugin, AgentSession, ConversationSummary,
-    ConversationSummaryDraft, FileAccess, MemoryInfo, ProcessInfo, SubAgentInfo, ToolCall,
+    push_recent_sample, safe_task_title, summary_hint, AgentPlugin, AgentSession,
+    ConversationSummary, ConversationSummaryDraft, FileAccess, MemoryInfo, ProcessInfo,
+    SubAgentInfo, ToolCall,
 };
 use crate::settings::AppSettings;
 use serde_json::Value;
@@ -246,9 +247,7 @@ fn parse_transcript(
                     .saturating_add(output)
                     .saturating_add(cache_read)
                     .saturating_add(cache_create);
-                if turn_tokens > 0 && token_history.len() < 200 {
-                    token_history.push(turn_tokens);
-                }
+                push_recent_sample(&mut token_history, turn_tokens, 200);
                 let current_context = input.saturating_add(cache_read);
                 if current_context > 0 {
                     if previous_context_tokens > 0
@@ -258,9 +257,7 @@ fn parse_transcript(
                     }
                     previous_context_tokens = current_context;
                     last_context_tokens = current_context;
-                    if context_history.len() < 200 {
-                        context_history.push(current_context);
-                    }
+                    push_recent_sample(&mut context_history, current_context, 200);
                 }
             }
             if let Some(content) = message.get("content").and_then(Value::as_array) {

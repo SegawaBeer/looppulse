@@ -1,7 +1,7 @@
 use super::{
     base_capabilities, content_stats, free_tier, normalize_project_display_name, now_seconds,
-    project_name_with_fallback, safe_task_title, summary_hint, AgentPlugin, AgentSession,
-    ConversationSummaryDraft, FileAccess, MemoryInfo, ProcessInfo, ToolCall,
+    project_name_with_fallback, push_recent_sample, safe_task_title, summary_hint, AgentPlugin,
+    AgentSession, ConversationSummaryDraft, FileAccess, MemoryInfo, ProcessInfo, ToolCall,
 };
 use crate::settings::AppSettings;
 use rusqlite::{params, Connection};
@@ -914,9 +914,7 @@ fn merge_tokens(stats: &mut OpenCodeStats, tokens: &Value, replace: bool) {
         .saturating_add(output)
         .saturating_add(cache_read)
         .saturating_add(cache_write);
-    if turn_tokens > 0 && stats.token_history.len() < 200 {
-        stats.token_history.push(turn_tokens);
-    }
+    push_recent_sample(&mut stats.token_history, turn_tokens, 200);
 
     let current_context = input.saturating_add(cache_read);
     if current_context > 0 {
@@ -927,9 +925,7 @@ fn merge_tokens(stats: &mut OpenCodeStats, tokens: &Value, replace: bool) {
         }
         stats.previous_context_tokens = current_context;
         stats.last_context_tokens = current_context;
-        if stats.context_history.len() < 200 {
-            stats.context_history.push(current_context);
-        }
+        push_recent_sample(&mut stats.context_history, current_context, 200);
     }
 
     let context_window = read_token_u64(

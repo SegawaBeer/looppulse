@@ -102,7 +102,7 @@ impl AppSettings {
         self.stalled_critical_minutes = self
             .stalled_critical_minutes
             .clamp(self.stalled_warning_minutes + 1, 240);
-        self.token_warning_threshold = self.token_warning_threshold.clamp(10_000, 50_000_000);
+        self.token_warning_threshold = self.token_warning_threshold.clamp(10_000, 5_000_000);
         self.history_retention_days = self.history_retention_days.clamp(1, 365);
         self.path_display_mode = normalize_path_display_mode(&self.path_display_mode);
 
@@ -352,7 +352,7 @@ fn default_stalled_critical_minutes() -> u64 {
 }
 
 fn default_token_warning_threshold() -> u64 {
-    1_000_000
+    80_000
 }
 
 fn default_history_retention_days() -> u64 {

@@ -146,7 +146,7 @@ block2 = "0.6"
 - [x] 通知可验证性：开启通知时发送测试通知；设置面板说明触发条件（新高危/注意风险、限流、错误、工作中会话停下，首次加载不补发旧风险）。
 - [x] 列表密度优化：隐藏列表里的 Agent/model chip 和 Pro chip，压缩卡片间距与指标行，让小面板能显示更多项目。
 - [x] 风险状态图标：菜单栏图标会随风险/活跃状态变化；视觉映射集中在 Rust 侧，方便后续替换正式品牌图标。
-- [x] 设置系统第一阶段：新增 Rust 侧持久化设置；支持刷新频率、启用 Agent、隐藏项目、通知类型、冷却、context / 假死 / token 阈值，并让 watcher 和手动刷新共用同一份配置。
+- [x] 设置系统第一阶段：新增 Rust 侧持久化设置；支持刷新频率、启用 Agent、隐藏项目、通知类型、冷却、context / 假死 / 用量突增阈值，并让 watcher 和手动刷新共用同一份配置。
 - [x] 会话操作第一阶段：详情页支持打开工程目录、打开终端到项目目录、尝试聚焦对应 Agent 应用、复制路径、复制诊断；通知发送附带 session id，并监听通知 action 用于定位详情。
 - [x] 采集准确性测试护栏：为 Claude transcript、Codex rollout、风险阈值、设置归一化/过滤、Git/端口 Pro 信号补单元测试，防止 context、限流、假死、token、环境信号后续回归。
 - [x] 通知点击定位：系统通知点击后会自动唤起面板，并定位到对应会话详情。
@@ -165,6 +165,7 @@ block2 = "0.6"
 - [x] abtop 细度对齐第二阶段：新增 `MonitorSnapshot` 全局监控快照；会话可携带子进程树、子进程端口、Claude subagents、Claude memory 状态；端口归属从主进程扩展到子/孙进程，新增端口冲突、空闲后残留子进程、orphan port tracker；非侵入式读取 Claude `abtop-rate-limits.json` 和 Codex rollout rate_limits；检测 `codex mcp-server` 并展示 active/total rollout；小面板详情、完整视图、诊断摘要和远程预览均接入这些深度信号。
 - [x] abtop 细度对齐第三阶段：Codex collector 排除 `codex mcp-server` PID 和 MCP-owned rollout，减少 phantom/重复会话；工具调用新增错误分类（rate_limit / permission / timeout / exit_code / error）并在诊断摘要和工具 timeline 展示；设置里新增 Claude StatusLine 状态检测和手动安装入口，不覆盖已有第三方 statusLine；全局通知新增孤儿端口、端口冲突和 quota 接近耗尽。
 - [x] abtop 细度对齐第四阶段：新增低敏会话摘要 `conversation_summary`；Claude/Codex/OpenCode 只采集阶段、turn 计数、工具计数、字数/图片数等元信息，不暴露 prompt、消息正文或文件内容；小面板、完整视图、复制诊断和远程预览均接入安全摘要。
+- [x] Token 告警语义修正：累计 token 只作为统计展示，不再触发风险/通知；风险引擎改为基于最近 token 增量突增判断，并统一更新设置页、通知说明、复制诊断、远程预览和测试护栏。Codex 累计 usage 已改为增量采样，Claude/OpenCode token/context history 改为保留最近样本。
 - [x] 会话操作后续：进一步用 shell cwd / 子进程树 / tab title 多信号提高无 TTY 场景下的命中率。
 - [x] 通知点击定位兜底链路：由于当前 macOS/Tauri notification 插件未暴露 `register_listener` 命令，新增后端 pending notification target、App 激活监听、panel focus/panel-shown 消费兜底；通知点击后即使插件 action listener 不可用，也会唤起面板并定位会话详情。
 - [x] OpenCode 深采集增强：OpenCode collector 改为 schema-aware 查询；补充 tool timeline、文件访问、session summary diff、token turn history、context history、压缩计数、reasoning/text/step/error/rate-limit 等信号；不读取账号 token 表，不暴露消息正文。
