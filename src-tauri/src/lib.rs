@@ -290,7 +290,7 @@ async fn get_monitor_snapshot() -> Result<MonitorSnapshot, String> {
     panel_log("command get_monitor_snapshot: begin");
     tauri::async_runtime::spawn_blocking(|| {
         let settings = settings::load_settings();
-        agents::collect_monitor_snapshot(&settings)
+        agents::collect_monitor_snapshot_cached(&settings, Duration::from_secs(2))
     })
     .await
     .map(|snapshot| {

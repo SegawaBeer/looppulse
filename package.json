@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "clean:debug": "bash scripts/clean-debug-cache.sh",
     "release:macos:preflight": "bash scripts/release-macos-preflight.sh"
   },
   "devDependencies": {

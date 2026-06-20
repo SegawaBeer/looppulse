@@ -40,8 +40,38 @@ impl AgentPlugin for ClaudePlugin {
             }
         }
 
-        results
+        dedupe_sessions_by_cwd(results)
     }
+}
+
+fn dedupe_sessions_by_cwd(sessions: Vec<AgentSession>) -> Vec<AgentSession> {
+    let mut by_cwd: HashMap<String, AgentSession> = HashMap::new();
+
+    for session in sessions {
+        let key = if session.cwd.trim().is_empty() {
+            format!("session:{}", session.session_id)
+        } else {
+            session.cwd.clone()
+        };
+
+        match by_cwd.get(&key) {
+            Some(existing) if prefer_existing_session(existing, &session) => {}
+            _ => {
+                by_cwd.insert(key, session);
+            }
+        }
+    }
+
+    let mut deduped = by_cwd.into_values().collect::<Vec<_>>();
+    deduped.sort_by_key(|session| std::cmp::Reverse(session.last_activity_at));
+    deduped
+}
+
+fn prefer_existing_session(existing: &AgentSession, candidate: &AgentSession) -> bool {
+    existing.last_activity_at > candidate.last_activity_at
+        || (existing.last_activity_at == candidate.last_activity_at
+            && existing.pid.is_some()
+            && candidate.pid.is_none())
 }
 
 fn live_claude_pids(processes: &HashMap<u32, ProcessInfo>) -> Vec<u32> {
@@ -169,14 +199,6 @@ fn parse_transcript(
             .and_then(Value::as_str)
             .unwrap_or_default();
         if value
-            .get("permissionMode")
-            .and_then(Value::as_str)
-            .is_some_and(|mode| mode == "plan")
-        {
-            waiting_for_user = true;
-            summary.set_phase("waiting_approval", line_timestamp);
-        }
-        if value
             .get("type")
             .and_then(Value::as_str)
             .is_some_and(|event_type| event_type == "permission-mode")
@@ -186,10 +208,10 @@ fn parse_transcript(
                 .and_then(Value::as_str)
                 .is_some_and(|mode| mode == "plan")
             {
-                waiting_for_user = true;
-                summary.set_phase("waiting_approval", line_timestamp);
+                summary.set_phase("progress", line_timestamp);
             } else {
                 waiting_for_user = false;
+                clear_waiting_task(&mut current_task);
             }
         }
         if let Some(message) = value.get("message") {
@@ -290,6 +312,8 @@ fn parse_transcript(
             }
             if is_successful_tool_result(&value) {
                 current_error = false;
+                waiting_for_user = false;
+                clear_waiting_task(&mut current_task);
             }
             if let Some(ts) = line_timestamp {
                 for index in pending_tool_indexes.drain(..) {
@@ -337,10 +361,14 @@ fn parse_transcript(
     }
 
     let pid = super::pid_for_cwd(&cwd, live_pid_cwds);
+    let last_activity_at = latest_event_at.unwrap_or(file_modified_at);
+    if pid.is_none() && now.saturating_sub(last_activity_at) > active_window_secs {
+        return None;
+    }
+
     let cpu_active = pid
         .and_then(|pid| processes.get(&pid))
         .is_some_and(|info| info.cpu_percent > 1.0);
-    let last_activity_at = latest_event_at.unwrap_or(file_modified_at);
     let age = now.saturating_sub(last_activity_at);
     let status = if current_error {
         "error"
@@ -571,6 +599,15 @@ fn claude_user_waiting_task(name: &str) -> &'static str {
         "AskUserQuestion" | "RequestUserInput" | "request_user_input" => "等待你回答问题",
         "ApprovalPrompt" => "等待你审批",
         _ => "等待你确认",
+    }
+}
+
+fn clear_waiting_task(current_task: &mut Option<String>) {
+    if current_task
+        .as_deref()
+        .is_some_and(|task| task.starts_with("等待你"))
+    {
+        *current_task = None;
     }
 }
 
@@ -833,7 +870,18 @@ mod tests {
         )
         .unwrap();
 
-        let session = parse_transcript(&transcript, false, &[], &HashMap::new()).unwrap();
+        let live_pid_cwds = vec![(42, "/Users/test/stale".to_string())];
+        let processes = HashMap::from([(
+            42,
+            ProcessInfo {
+                pid: 42,
+                ppid: 0,
+                cpu_percent: 0.0,
+                rss_kb: 100,
+                command: "claude".to_string(),
+            },
+        )]);
+        let session = parse_transcript(&transcript, true, &live_pid_cwds, &processes).unwrap();
 
         assert_eq!(session.session_id, "claude-stale");
         assert_eq!(session.status, "waiting");
@@ -846,11 +894,9 @@ mod tests {
         let dir = unique_temp_dir("claude-error");
         fs::create_dir_all(dir.join("-Users-test-error")).unwrap();
         let transcript = dir.join("-Users-test-error").join("session-error.jsonl");
-        fs::write(
-            &transcript,
-            r#"{"sessionId":"claude-error","cwd":"/Users/test/error","timestamp":"2026-06-04T00:00:00Z","type":"assistant","content":"tool failed with timeout"}"#,
-        )
-        .unwrap();
+        let content = r#"{"sessionId":"claude-error","cwd":"/Users/test/error","timestamp":"__T0__","type":"assistant","content":"tool failed with timeout"}"#
+            .replace("__T0__", &test_timestamp(0));
+        fs::write(&transcript, content).unwrap();
 
         let session = parse_transcript(&transcript, false, &[], &HashMap::new()).unwrap();
 
@@ -878,6 +924,51 @@ mod tests {
         assert_eq!(session.status, "waiting_approval");
         assert_eq!(session.current_task.as_deref(), Some("等待你确认计划"));
         assert_eq!(session.conversation_summary.phase, "waiting_approval");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn plan_mode_alone_does_not_mean_waiting_for_confirmation() {
+        let dir = unique_temp_dir("claude-plan-progress");
+        fs::create_dir_all(dir.join("-Users-test-plan-progress")).unwrap();
+        let transcript = dir
+            .join("-Users-test-plan-progress")
+            .join("session-plan-progress.jsonl");
+        let content = r#"{"type":"permission-mode","permissionMode":"plan","sessionId":"claude-plan-progress","timestamp":"__T0__"}
+{"sessionId":"claude-plan-progress","cwd":"/Users/test/plan-progress","timestamp":"__T1__","type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/lib.rs"}}]}}"#
+            .replace("__T0__", &test_timestamp(-5))
+            .replace("__T1__", &test_timestamp(0));
+        fs::write(&transcript, content).unwrap();
+
+        let session = parse_transcript(&transcript, false, &[], &HashMap::new()).unwrap();
+
+        assert_eq!(session.status, "executing");
+        assert_ne!(session.conversation_summary.phase, "waiting_approval");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn successful_approval_tool_result_clears_waiting_state() {
+        let dir = unique_temp_dir("claude-plan-approved");
+        fs::create_dir_all(dir.join("-Users-test-plan-approved")).unwrap();
+        let transcript = dir
+            .join("-Users-test-plan-approved")
+            .join("session-plan-approved.jsonl");
+        let content = r#"{"sessionId":"claude-plan-approved","cwd":"/Users/test/plan-approved","timestamp":"__T0__","type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"tool_use","name":"ExitPlanMode","input":{}}]}}
+{"sessionId":"claude-plan-approved","cwd":"/Users/test/plan-approved","timestamp":"__T1__","type":"user","message":{"content":[{"type":"tool_result","content":"approved","tool_use_id":"tooluse_plan"}]}}
+{"sessionId":"claude-plan-approved","cwd":"/Users/test/plan-approved","timestamp":"__T2__","type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/lib.rs"}}]}}"#
+            .replace("__T0__", &test_timestamp(-10))
+            .replace("__T1__", &test_timestamp(-5))
+            .replace("__T2__", &test_timestamp(0));
+        fs::write(&transcript, content).unwrap();
+
+        let session = parse_transcript(&transcript, false, &[], &HashMap::new()).unwrap();
+
+        assert_eq!(session.status, "executing");
+        assert_ne!(session.current_task.as_deref(), Some("等待你确认计划"));
+        assert_ne!(session.conversation_summary.phase, "waiting_approval");
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -935,13 +1026,13 @@ mod tests {
         let dir = unique_temp_dir("claude-content-shapes");
         fs::create_dir_all(dir.join("-Users-test-shapes")).unwrap();
         let transcript = dir.join("-Users-test-shapes").join("session-shapes.jsonl");
-        fs::write(
-            &transcript,
-            r#"{"sessionId":"claude-shapes","cwd":"/Users/test/shapes","timestamp":"2026-06-04T00:00:00Z","type":"user","message":{"content":"secret prompt text"}}
-{"sessionId":"claude-shapes","cwd":"/Users/test/shapes","timestamp":"2026-06-04T00:00:01Z","type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/lib.rs"}}]}}
-{"sessionId":"claude-shapes","cwd":"/Users/test/shapes","timestamp":"2026-06-04T00:00:02Z","type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"ok"}]}]}}"#,
-        )
-        .unwrap();
+        let content = r#"{"sessionId":"claude-shapes","cwd":"/Users/test/shapes","timestamp":"__T0__","type":"user","message":{"content":"secret prompt text"}}
+{"sessionId":"claude-shapes","cwd":"/Users/test/shapes","timestamp":"__T1__","type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/lib.rs"}}]}}
+{"sessionId":"claude-shapes","cwd":"/Users/test/shapes","timestamp":"__T2__","type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"ok"}]}]}}"#
+            .replace("__T0__", &test_timestamp(-2))
+            .replace("__T1__", &test_timestamp(-1))
+            .replace("__T2__", &test_timestamp(0));
+        fs::write(&transcript, content).unwrap();
 
         let session = parse_transcript(&transcript, false, &[], &HashMap::new()).unwrap();
 
@@ -959,6 +1050,25 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("secret"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_transcript_without_live_pid_is_filtered_even_if_file_was_touched() {
+        let dir = unique_temp_dir("claude-stale-filter");
+        fs::create_dir_all(dir.join("-Users-test-gongzhonghao")).unwrap();
+        let transcript = dir
+            .join("-Users-test-gongzhonghao")
+            .join("session-stale-filter.jsonl");
+        fs::write(
+            &transcript,
+            r#"{"sessionId":"claude-stale-filter","cwd":"/Users/test/gongzhonghao","timestamp":"2026-06-04T00:00:00Z","type":"user","message":{"content":"old"}}
+{"sessionId":"claude-stale-filter","cwd":"/Users/test/gongzhonghao","timestamp":"2026-06-04T00:00:01Z","type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":"done"}}"#,
+        )
+        .unwrap();
+
+        assert!(parse_transcript(&transcript, false, &[], &HashMap::new()).is_none());
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -1012,6 +1122,56 @@ mod tests {
             .any(|component| component.as_os_str() == "subagents")));
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dedupes_multiple_transcripts_for_same_project() {
+        let older = AgentSession {
+            agent_type: "Claude Code".to_string(),
+            session_id: "older".to_string(),
+            pid: None,
+            project_name: "gongzhonghao".to_string(),
+            cwd: "/Users/test/gongzhonghao".to_string(),
+            status: "waiting".to_string(),
+            started_at: 90,
+            last_activity_at: 100,
+            model: Some("claude-sonnet".to_string()),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_create_tokens: 0,
+            context_percent: None,
+            context_pressure_percent: None,
+            context_is_estimated: true,
+            context_window: None,
+            current_task: None,
+            conversation_summary: ConversationSummary::default(),
+            tool_calls: vec![],
+            file_accesses: vec![],
+            token_history: vec![],
+            context_history: vec![],
+            compaction_count: 0,
+            git: None,
+            ports: vec![],
+            children: vec![],
+            subagents: vec![],
+            memory: MemoryInfo::default(),
+            permission_observations: vec![],
+            risk_level: "ok".to_string(),
+            risks: vec![],
+            capabilities: base_capabilities(),
+            tier: free_tier(),
+        };
+        let mut newer = older.clone();
+        newer.session_id = "newer".to_string();
+        newer.last_activity_at = 200;
+        newer.status = "executing".to_string();
+
+        let sessions = dedupe_sessions_by_cwd(vec![older, newer]);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "newer");
+        assert_eq!(sessions[0].status, "executing");
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

@@ -1943,7 +1943,7 @@
   function riskLabel(level: string): string {
     switch (level) {
       case "critical": return "需要处理";
-      case "warning": return "待确认";
+      case "warning": return "需查看";
       case "info": return "观察";
       default: return "正常";
     }
@@ -1990,10 +1990,10 @@
 
   function livenessLabel(session: AgentSession): string {
     if (session.risk_level === "critical") return "异常";
-    if (session.risk_level === "warning") return "待确认";
-    if (session.status === "rate_limited") return "限流";
     if (session.status === "waiting_approval") return "待确认";
     if (wasActive(session.status)) return "工作中";
+    if (session.risk_level === "warning") return "需查看";
+    if (session.status === "rate_limited") return "限流";
     if (["waiting", "idle"].includes(session.status)) return "待命";
     if (["done", "finished"].includes(session.status)) return "已停下";
     return statusLabel(session.status);
@@ -2002,8 +2002,8 @@
   function pulseToneForSession(session: AgentSession): "ok" | "work" | "warning" | "critical" | "idle" {
     if (session.risk_level === "critical" || ["error", "rate_limited", "stalled"].includes(session.status)) return "critical";
     if (session.status === "waiting_approval") return "warning";
-    if (session.risk_level === "warning") return "warning";
     if (wasActive(session.status)) return "work";
+    if (session.risk_level === "warning") return "warning";
     if (["waiting", "idle"].includes(session.status)) return "ok";
     return "idle";
   }
@@ -2012,16 +2012,18 @@
     if (session.risk_level === "critical" || ["error", "rate_limited", "stalled"].includes(session.status)) {
       return riskColor("critical");
     }
-    if (session.risk_level === "warning" || session.status === "waiting_approval") {
+    if (session.status === "waiting_approval") {
       return riskColor("warning");
     }
+    if (wasActive(session.status)) return statusColor(session.status);
+    if (session.risk_level === "warning") return riskColor("warning");
     return statusColor(session.status);
   }
 
   function pulseToneLabel(tone: ReturnType<typeof pulseToneForSession>): string {
     switch (tone) {
       case "critical": return "异常";
-      case "warning": return "待确认";
+      case "warning": return "需查看";
       case "work": return "工作中";
       case "ok": return "存活";
       default: return "停下";
@@ -2140,9 +2142,15 @@
     const risk = session.risks[0];
     if (risk) return risk.message || risk.evidence || risk.action || "需要你查看";
     if (wasActive(session.status)) return conversationTitle(session);
-    if (["waiting", "idle"].includes(session.status)) return "暂无待处理动作";
+    if (["waiting", "idle"].includes(session.status)) return "暂无需要处理";
     if (["done", "finished"].includes(session.status)) return "会话已停下";
     return statusLabel(session.status);
+  }
+
+  function cardMessageLine(session: AgentSession): string {
+    const risk = session.risks[0];
+    if (risk) return risk.message || risk.evidence || risk.title || "需要你查看";
+    return externalSecondaryLine(session);
   }
 
   function cardStateColor(session: AgentSession): string {
@@ -2674,6 +2682,8 @@
   let warningCount = $derived(sessions.filter((s) => ["warning", "critical"].includes(s.risk_level)).length);
   let criticalCount = $derived(sessions.filter((s) => s.risk_level === "critical").length);
   let warningOnlyCount = $derived(sessions.filter((s) => s.risk_level === "warning").length);
+  let approvalCount = $derived(sessions.filter((s) => s.status === "waiting_approval").length);
+  let attentionCount = $derived(sessions.filter((s) => ["warning", "critical"].includes(s.risk_level) || s.status === "waiting_approval").length);
   let proLockedCount = $derived(sessions.reduce((sum, s) => sum + proSignalCountForSession(s), 0));
   let totalTokenCount = $derived(sessions.reduce((sum, s) => sum + totalTokens(s), 0));
   let totalCount = $derived(sessions.length);
@@ -2686,29 +2696,18 @@
   function overallStatus(): { label: string; color: string } {
     if (totalCount === 0) return { label: "未发现会话", color: "rgba(255,255,255,0.35)" };
     if (criticalCount > 0) return { label: "需要处理", color: "#FF5C7A" };
-    if (warningCount > 0) return { label: "待确认", color: "#FFB84D" };
+    if (approvalCount > 0) return { label: "待确认", color: "#FFB84D" };
     if (activeCount > 0) return { label: "工作中", color: "#FF9A3C" };
+    if (warningCount > 0) return { label: "需查看", color: "#FFB84D" };
     return { label: "待命", color: "#4CD4A0" };
-  }
-
-  function alertPillLabel(): string {
-    if (criticalCount > 0) return `${criticalCount} 个待处理`;
-    if (warningOnlyCount > 0) return `${warningOnlyCount} 个待确认`;
-    return "无告警";
-  }
-
-  function overviewSignalLine(): string {
-    if (totalCount === 0) return "等待会话";
-    const firstProject = sessions[0]?.project_name || sessions[0]?.agent_type || "Agent";
-    const suffix = totalCount > 1 ? `等 ${totalCount} 个会话` : "正在监控";
-    return `${firstProject} · ${suffix}`;
   }
 
   function overallTone(): "ok" | "work" | "warning" | "critical" | "neutral" {
     if (totalCount === 0) return "neutral";
     if (criticalCount > 0) return "critical";
-    if (warningOnlyCount > 0) return "warning";
+    if (approvalCount > 0) return "warning";
     if (activeCount > 0) return "work";
+    if (warningOnlyCount > 0) return "warning";
     return "ok";
   }
 
@@ -2765,12 +2764,14 @@
         tone: activeCount > 0 ? "work" : "neutral"
       },
       {
-        label: "待处理",
-        value: `${criticalCount + warningOnlyCount}`,
+        label: approvalCount > 0 ? "待确认" : "需查看",
+        value: `${attentionCount}`,
         hint: criticalCount > 0
           ? `${criticalCount} 个需要立即查看`
+          : approvalCount > 0
+            ? `${approvalCount} 个等待你确认`
           : warningOnlyCount > 0
-            ? `${warningOnlyCount} 个待确认`
+            ? `${warningOnlyCount} 个需查看`
             : "暂无需要处理",
         tone: criticalCount > 0 ? "critical" : warningOnlyCount > 0 ? "warning" : "neutral"
       }
@@ -2931,7 +2932,7 @@
       <div class="dash-status-card">
         <span>整体状态</span>
         <strong style="color:{overallStatus().color}">{overallStatus().label}</strong>
-        <p>{totalCount} 会话 · {activeCount} 工作中 · {warningCount} 待处理/确认</p>
+        <p>{totalCount} 会话 · {activeCount} 工作中 · {attentionCount} 需查看/待确认</p>
       </div>
 
       <nav class="dash-filter-list" aria-label="会话筛选">
@@ -2944,7 +2945,7 @@
           <em>{activeCount}</em>
         </button>
         <button class:active={dashboardFilter === "risk"} onclick={() => dashboardFilter = "risk"}>
-          <span>待处理会话</span>
+          <span>需查看会话</span>
           <em>{warningCount}</em>
         </button>
         <button class:active={dashboardFilter === "pro"} onclick={() => dashboardFilter = "pro"}>
@@ -2959,7 +2960,7 @@
           {#each dashboardProjects as project}
             <div class="project-row">
               <strong>{project.name}</strong>
-              <span>{project.total} 会话 · {project.active} 工作中 · {project.risks} 待处理</span>
+              <span>{project.total} 会话 · {project.active} 工作中 · {project.risks} 需查看</span>
               <i style="width:{Math.min(100, Math.max(8, project.risks * 30 + project.active * 12))}%"></i>
             </div>
           {/each}
@@ -2992,7 +2993,7 @@
           <em>共 {totalCount} 个会话</em>
         </div>
         <div class="dash-kpi">
-          <span>待处理</span>
+          <span>需查看</span>
           <strong style="color:{warningCount ? '#FFB84D' : '#4CD4A0'}">{warningCount}</strong>
           <em>{sessions.filter((s) => s.risk_level === "critical").length} 个需要立即看</em>
         </div>
@@ -3295,21 +3296,14 @@
     <div class="header-text">
       <h1>
         LoopPulse
-        <span class="title-dot" style="color:{overallStatus().color}">·</span>
-        <span class="title-status" style="color:{overallStatus().color}">{overallStatus().label}</span>
       </h1>
-      <p class="subtitle">
-        {#if totalCount === 0}
+      {#if totalCount === 0}
+        <p class="subtitle">
           本地 Agent 存活监控与报警
-        {:else}
-          <span class="accent">{totalCount}</span> 会话 · <span class="accent-orange">{activeCount}</span> 工作中 · <span class="accent-alert">{criticalCount + warningOnlyCount}</span> 需查看 · {overviewSignalLine()}
-        {/if}
-      </p>
+        </p>
+      {/if}
     </div>
     <div class="health-stack">
-      <div class="health-pill" style="color:{overallStatus().color}; border-color:{overallStatus().color}55">
-        {alertPillLabel()}
-      </div>
       {#if totalCount > 0 && !selectedSession}
         <div class="view-toggle" aria-label="列表视图">
           <button class:active={listViewMode === "full"} title="详细视图" onclick={() => setListViewMode("full")}>详</button>
@@ -3322,17 +3316,6 @@
   {#if totalCount > 0 && !selectedSession}
     <section class={`panel-overview tone-${overallTone()}`}>
       <div class={`overview-monitor-card panel-pop-item tone-${overallTone()}`} style="--pop-delay:74ms">
-        <div class="overview-monitor-copy">
-          <span>整体态势</span>
-          <strong style="color:{overallStatus().color}">{overallStatus().label}</strong>
-          {#if primaryAlert}
-            <em>{primaryAlert.session.project_name} · {primaryAlert.risk.title}</em>
-          {:else if activeCount > 0}
-            <em>{activeCount} 个 Agent 正在工作</em>
-          {:else}
-            <em>所有会话待命</em>
-          {/if}
-        </div>
         <div class="overview-signal-grid" aria-label={`Agent 指示灯：${signalSessionCount()} 个会话`}>
           {#each overviewSignalCells() as cell (cell.key)}
             <span
@@ -3681,11 +3664,8 @@
             <span class="model-chip">{modelBadgeLabel(session)}</span>
             <span class="permission-count-chip">{permissionCompactLabel(session)}</span>
           </div>
-          <div class="card-state-line" style="color:{cardStateColor(session)}">
-            {externalPrimaryLine(session)}
-          </div>
-          <div class="card-evidence-line">
-            {externalSecondaryLine(session)}
+          <div class="card-evidence-line" style="color:{cardStateColor(session)}">
+            {cardMessageLine(session)}
           </div>
           <div class="card-path-line" title={session.cwd}>
             <span>位置</span>
@@ -3725,13 +3705,7 @@
           stroke="rgba(255,255,255,0.35)" stroke-width="1.1" stroke-linecap="round"/>
       </svg>
     </button>
-    <span class="footer-label">
-      {#if selectedSession}
-        {selectedSession.risks.length > 0 ? selectedSession.risks[0].title : `${sessionTitle(selectedSession)} · ${livenessLabel(selectedSession)}`}
-      {:else}
-        {totalCount > 0 ? `本地实时监控中 · ${formatClock(monitorSnapshot.updated_at)}` : "等待 Agent 会话"}
-      {/if}
-    </span>
+    <span class="footer-label"></span>
   </footer>
 
   {#if settingsOpen}
@@ -5967,19 +5941,12 @@
     white-space: nowrap;
   }
 
-  .title-dot { margin: 0 3px 0 5px; font-weight: 300; opacity: 0.8; }
-  .title-status { font-size: 16px; font-weight: 500; }
-
   .subtitle {
     margin: 0;
     font-size: 12px;
     color: var(--obs-text-secondary);
     line-height: 1.25;
   }
-
-  .accent { color: var(--obs-status-info); font-weight: 600; }
-  .accent-orange { color: var(--obs-status-work); font-weight: 600; }
-  .accent-alert { color: var(--obs-text-secondary); font-weight: 600; }
 
   .health-stack {
     flex-shrink: 0;
@@ -5990,7 +5957,6 @@
     margin-top: 1px;
   }
 
-  .health-pill,
   .pro-pill {
     height: 20px;
     display: inline-flex;
@@ -6094,12 +6060,11 @@
   .overview-monitor-card {
     width: 100%;
     max-width: 100%;
-    min-height: 78px;
-    display: grid;
-    grid-template-columns: minmax(116px, 1fr) max-content;
+    min-height: 64px;
+    display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 11px;
+    justify-content: center;
+    padding: 10px 12px;
     border-radius: 11px;
     border: 0.5px solid var(--obs-border-soft);
     background: rgba(255, 255, 255, 0.052);
@@ -6130,12 +6095,6 @@
     background: rgba(255, 255, 255, 0.045);
   }
 
-  .overview-monitor-copy {
-    min-width: 0;
-  }
-
-  .overview-monitor-copy span,
-  .overview-monitor-copy em,
   .overview-metric span,
   .overview-metric em {
     display: block;
@@ -6146,32 +6105,14 @@
     font-style: normal;
   }
 
-  .overview-monitor-copy span {
-    font-size: 10px;
-    color: var(--obs-text-muted);
-  }
-
-  .overview-monitor-copy strong {
-    display: block;
-    margin-top: 3px;
-    font-size: 21px;
-    line-height: 1.08;
-    letter-spacing: 0;
-  }
-
-  .overview-monitor-copy em {
-    margin-top: 5px;
-    font-size: 10px;
-    color: var(--obs-text-secondary);
-  }
-
   .overview-signal-grid {
     min-width: 0;
-    justify-self: end;
+    width: min(100%, 324px);
     display: grid;
     grid-template-columns: repeat(10, 15px);
     grid-auto-rows: 15px;
-    gap: 6px;
+    justify-content: space-between;
+    gap: 6px 4px;
     padding: 2px;
   }
 

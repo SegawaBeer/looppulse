@@ -472,6 +472,14 @@ struct TrackedPortProcess {
 }
 
 static PORT_TRACKER: OnceLock<Mutex<HashMap<(u32, u16), TrackedPortProcess>>> = OnceLock::new();
+static SNAPSHOT_CACHE: OnceLock<Mutex<Option<CachedMonitorSnapshot>>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct CachedMonitorSnapshot {
+    settings_key: String,
+    collected_at: Instant,
+    snapshot: MonitorSnapshot,
+}
 
 pub trait AgentPlugin: Send + Sync {
     fn name(&self) -> &str;
@@ -491,7 +499,39 @@ pub fn all_plugins() -> Vec<Box<dyn AgentPlugin>> {
 }
 
 pub fn collect_sessions_with_settings(settings: &AppSettings) -> Vec<AgentSession> {
-    collect_monitor_snapshot(settings).sessions
+    collect_monitor_snapshot_cached(settings, Duration::from_secs(1)).sessions
+}
+
+pub fn collect_monitor_snapshot_cached(
+    settings: &AppSettings,
+    max_age: Duration,
+) -> MonitorSnapshot {
+    let settings_key = snapshot_settings_key(settings);
+    if let Ok(cache) = snapshot_cache().lock() {
+        if let Some(cached) = cache.as_ref() {
+            if cached.settings_key == settings_key && cached.collected_at.elapsed() <= max_age {
+                return cached.snapshot.clone();
+            }
+        }
+    }
+
+    let snapshot = collect_monitor_snapshot(settings);
+    if let Ok(mut cache) = snapshot_cache().lock() {
+        *cache = Some(CachedMonitorSnapshot {
+            settings_key,
+            collected_at: Instant::now(),
+            snapshot: snapshot.clone(),
+        });
+    }
+    snapshot
+}
+
+fn snapshot_cache() -> &'static Mutex<Option<CachedMonitorSnapshot>> {
+    SNAPSHOT_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn snapshot_settings_key(settings: &AppSettings) -> String {
+    serde_json::to_string(settings).unwrap_or_default()
 }
 
 pub fn collect_monitor_snapshot(settings: &AppSettings) -> MonitorSnapshot {
@@ -533,6 +573,7 @@ pub fn collect_monitor_snapshot(settings: &AppSettings) -> MonitorSnapshot {
         .collect();
 
     let rate_limits = collect_rate_limits(settings);
+    all = dedupe_sessions_by_identity(all);
     apply_rate_limit_status(&mut all, &rate_limits, settings);
     let port_conflicts = detect_port_conflicts(&all);
     apply_port_conflict_risks(&mut all, &port_conflicts, settings);
@@ -560,6 +601,68 @@ pub fn find_orphan_port(settings: &AppSettings, pid: u32, port: u16) -> Option<O
         .orphan_ports
         .into_iter()
         .find(|orphan| orphan.pid == pid && orphan.port == port)
+}
+
+fn dedupe_sessions_by_identity(sessions: Vec<AgentSession>) -> Vec<AgentSession> {
+    let mut by_identity: HashMap<String, AgentSession> = HashMap::new();
+    let mut passthrough = Vec::new();
+
+    for session in sessions {
+        let Some(key) = session_identity_key(&session) else {
+            passthrough.push(session);
+            continue;
+        };
+
+        match by_identity.get(&key) {
+            Some(existing) if prefer_existing_identity(existing, &session) => {}
+            _ => {
+                by_identity.insert(key, session);
+            }
+        }
+    }
+
+    passthrough.extend(by_identity.into_values());
+    passthrough
+}
+
+fn session_identity_key(session: &AgentSession) -> Option<String> {
+    if let Some(cwd) = normalize_path_for_match(&session.cwd) {
+        return Some(format!(
+            "{}:cwd:{cwd}",
+            session.agent_type.trim().to_ascii_lowercase()
+        ));
+    }
+
+    let project_name = normalize_project_name_for_match(&session.project_name)?;
+    Some(format!(
+        "{}:project:{project_name}",
+        session.agent_type.trim().to_ascii_lowercase()
+    ))
+}
+
+fn prefer_existing_identity(existing: &AgentSession, candidate: &AgentSession) -> bool {
+    session_identity_score(existing) >= session_identity_score(candidate)
+}
+
+fn session_identity_score(session: &AgentSession) -> (u8, u8, u8, i64, i64) {
+    (
+        u8::from(session.pid.is_some()),
+        session_status_rank(&session.status),
+        session.risk_rank(),
+        session.last_activity_at,
+        session.started_at,
+    )
+}
+
+fn session_status_rank(status: &str) -> u8 {
+    match status {
+        "error" | "rate_limited" | "stalled" => 5,
+        "waiting_approval" => 4,
+        "busy" | "thinking" | "executing" => 3,
+        "waiting" | "idle" => 2,
+        "done" | "finished" => 1,
+        _ => 0,
+    }
 }
 
 pub fn pid_listens_on_port(pid: u32, port: u16) -> bool {
@@ -642,7 +745,16 @@ fn normalize_path_for_match(path: &str) -> Option<String> {
     if trimmed.is_empty() {
         None
     } else {
-        Some(trimmed.to_string())
+        Some(trimmed.to_ascii_lowercase())
+    }
+}
+
+fn normalize_project_name_for_match(name: &str) -> Option<String> {
+    let normalized = name.trim().to_ascii_lowercase();
+    if normalized.is_empty() || is_technical_workspace_name(&normalized) {
+        None
+    } else {
+        Some(normalized)
     }
 }
 
@@ -2036,6 +2148,45 @@ mod tests {
             normalize_project_display_name("uploaded-files-123", "临时对话"),
             "临时对话"
         );
+    }
+
+    #[test]
+    fn dedupes_sessions_with_same_agent_and_cwd() {
+        let mut older = sample_session();
+        older.session_id = "older".to_string();
+        older.pid = None;
+        older.status = "idle".to_string();
+        older.last_activity_at = 100;
+        older.cwd = "/Users/test/gongzhonghao".to_string();
+        older.project_name = "gongzhonghao".to_string();
+
+        let mut current = older.clone();
+        current.session_id = "current".to_string();
+        current.pid = Some(42);
+        current.status = "executing".to_string();
+        current.last_activity_at = 90;
+
+        let sessions = dedupe_sessions_by_identity(vec![older, current]);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "current");
+        assert_eq!(sessions[0].status, "executing");
+    }
+
+    #[test]
+    fn keeps_same_project_name_when_cwd_differs() {
+        let mut first = sample_session();
+        first.session_id = "first".to_string();
+        first.project_name = "gongzhonghao".to_string();
+        first.cwd = "/Users/test/a/gongzhonghao".to_string();
+
+        let mut second = first.clone();
+        second.session_id = "second".to_string();
+        second.cwd = "/Users/test/b/gongzhonghao".to_string();
+
+        let sessions = dedupe_sessions_by_identity(vec![first, second]);
+
+        assert_eq!(sessions.len(), 2);
     }
 
     #[test]

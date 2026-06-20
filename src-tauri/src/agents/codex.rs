@@ -401,10 +401,14 @@ fn parse_rollout(
     }
 
     let pid = super::pid_for_cwd(&cwd, live_pid_cwds);
+    let last_activity_at = latest_event_at.unwrap_or(file_modified_at);
+    if pid.is_none() && now.saturating_sub(last_activity_at) > active_window_secs {
+        return None;
+    }
+
     let cpu_active = pid
         .and_then(|pid| processes.get(&pid))
         .is_some_and(|info| info.cpu_percent > 1.0);
-    let last_activity_at = latest_event_at.unwrap_or(file_modified_at);
     let status_age = now.saturating_sub(last_activity_at);
     let status = if has_error {
         "error"
@@ -693,10 +697,38 @@ mod tests {
         )
         .unwrap();
 
-        let session = parse_rollout(&rollout, &[], &HashMap::new()).unwrap();
+        let live_pid_cwds = vec![(42, "/Users/test/stale".to_string())];
+        let processes = HashMap::from([(
+            42,
+            ProcessInfo {
+                pid: 42,
+                ppid: 0,
+                cpu_percent: 0.0,
+                rss_kb: 100,
+                command: "codex".to_string(),
+            },
+        )]);
+        let session = parse_rollout(&rollout, &live_pid_cwds, &processes).unwrap();
 
         assert_eq!(session.session_id, "codex-stale");
         assert_eq!(session.status, "idle");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_rollout_without_live_pid_is_filtered_even_if_file_was_touched() {
+        let dir = unique_temp_dir("codex-stale-filter");
+        fs::create_dir_all(&dir).unwrap();
+        let rollout = dir.join("rollout-stale-filter.jsonl");
+        fs::write(
+            &rollout,
+            r#"{"timestamp":"2026-06-04T00:00:00Z","type":"session_meta","payload":{"id":"codex-stale-filter","cwd":"/Users/test/gongzhonghao"}}
+{"timestamp":"2026-06-04T00:00:01Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
+        )
+        .unwrap();
+
+        assert!(parse_rollout(&rollout, &[], &HashMap::new()).is_none());
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -706,14 +738,15 @@ mod tests {
         let dir = unique_temp_dir("codex-summary");
         fs::create_dir_all(&dir).unwrap();
         let rollout = dir.join("rollout-summary.jsonl");
-        fs::write(
-            &rollout,
-            r#"{"timestamp":"2026-06-04T00:00:00Z","type":"session_meta","payload":{"id":"codex-summary","cwd":"/Users/test/summary"}}
-{"timestamp":"2026-06-04T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"please fix secret bug","images":[],"local_images":[]}}
-{"timestamp":"2026-06-04T00:00:02Z","type":"event_msg","payload":{"type":"agent_message","message":"I will inspect it","phase":"planning"}}
-{"timestamp":"2026-06-04T00:00:03Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
-        )
-        .unwrap();
+        let content = r#"{"timestamp":"__T0__","type":"session_meta","payload":{"id":"codex-summary","cwd":"/Users/test/summary"}}
+{"timestamp":"__T1__","type":"event_msg","payload":{"type":"user_message","message":"please fix secret bug","images":[],"local_images":[]}}
+{"timestamp":"__T2__","type":"event_msg","payload":{"type":"agent_message","message":"I will inspect it","phase":"planning"}}
+{"timestamp":"__T3__","type":"event_msg","payload":{"type":"task_complete"}}"#
+            .replace("__T0__", &test_timestamp(-3))
+            .replace("__T1__", &test_timestamp(-2))
+            .replace("__T2__", &test_timestamp(-1))
+            .replace("__T3__", &test_timestamp(0));
+        fs::write(&rollout, content).unwrap();
 
         let session = parse_rollout(&rollout, &[], &HashMap::new()).unwrap();
 
@@ -742,13 +775,13 @@ mod tests {
         let dir = unique_temp_dir("codex-rate-limit");
         fs::create_dir_all(&dir).unwrap();
         let rollout = dir.join("rollout-rate-limit.jsonl");
-        fs::write(
-            &rollout,
-            r#"{"timestamp":"2026-06-04T00:00:00Z","type":"session_meta","payload":{"id":"codex-rate","cwd":"/Users/test/rate"}}
-{"timestamp":"2026-06-04T00:00:01Z","type":"event_msg","payload":{"type":"task_complete"}}
-{"timestamp":"2026-06-04T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}},"rate_limits":{"rate_limit_reached_type":"primary"}}}"#,
-        )
-        .unwrap();
+        let content = r#"{"timestamp":"__T0__","type":"session_meta","payload":{"id":"codex-rate","cwd":"/Users/test/rate"}}
+{"timestamp":"__T1__","type":"event_msg","payload":{"type":"task_complete"}}
+{"timestamp":"__T2__","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}},"rate_limits":{"rate_limit_reached_type":"primary"}}}"#
+            .replace("__T0__", &test_timestamp(-2))
+            .replace("__T1__", &test_timestamp(-1))
+            .replace("__T2__", &test_timestamp(0));
+        fs::write(&rollout, content).unwrap();
 
         let session = parse_rollout(&rollout, &[], &HashMap::new()).unwrap();
 
@@ -763,13 +796,13 @@ mod tests {
         let dir = unique_temp_dir("codex-tool-error");
         fs::create_dir_all(&dir).unwrap();
         let rollout = dir.join("rollout-tool-error.jsonl");
-        fs::write(
-            &rollout,
-            r#"{"timestamp":"2026-06-04T00:00:00Z","type":"session_meta","payload":{"id":"codex-error","cwd":"/Users/test/codex-error"}}
-{"timestamp":"2026-06-04T00:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":"shell","arguments":"{\"cmd\":\"npm test\"}"}}
-{"timestamp":"2026-06-04T00:00:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"Process exited with code 1\nOutput:\nfailed"}}"#,
-        )
-        .unwrap();
+        let content = r#"{"timestamp":"__T0__","type":"session_meta","payload":{"id":"codex-error","cwd":"/Users/test/codex-error"}}
+{"timestamp":"__T1__","type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":"shell","arguments":"{\"cmd\":\"npm test\"}"}}
+{"timestamp":"__T2__","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"Process exited with code 1\nOutput:\nfailed"}}"#
+            .replace("__T0__", &test_timestamp(-2))
+            .replace("__T1__", &test_timestamp(-1))
+            .replace("__T2__", &test_timestamp(0));
+        fs::write(&rollout, content).unwrap();
 
         let session = parse_rollout(&rollout, &[], &HashMap::new()).unwrap();
 
@@ -788,15 +821,17 @@ mod tests {
         let dir = unique_temp_dir("codex-response-shapes");
         fs::create_dir_all(&dir).unwrap();
         let rollout = dir.join("rollout-response-shapes.jsonl");
-        fs::write(
-            &rollout,
-            r#"{"timestamp":"2026-06-04T00:00:00Z","type":"session_meta","payload":{"id":"codex-shapes","cwd":"/Users/test/shapes"}}
-{"timestamp":"2026-06-04T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"secret user text"}]}}
-{"timestamp":"2026-06-04T00:00:02Z","type":"response_item","payload":{"type":"function_call","id":"fc-1","name":"shell","arguments":"{\"command\":\"pnpm build\"}"}}
-{"timestamp":"2026-06-04T00:00:03Z","type":"response_item","payload":{"type":"function_call_output","id":"fc-1","output":"ok"}}
-{"timestamp":"2026-06-04T00:00:04Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#,
-        )
-        .unwrap();
+        let content = r#"{"timestamp":"__T0__","type":"session_meta","payload":{"id":"codex-shapes","cwd":"/Users/test/shapes"}}
+{"timestamp":"__T1__","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"secret user text"}]}}
+{"timestamp":"__T2__","type":"response_item","payload":{"type":"function_call","id":"fc-1","name":"shell","arguments":"{\"command\":\"pnpm build\"}"}}
+{"timestamp":"__T3__","type":"response_item","payload":{"type":"function_call_output","id":"fc-1","output":"ok"}}
+{"timestamp":"__T4__","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#
+            .replace("__T0__", &test_timestamp(-4))
+            .replace("__T1__", &test_timestamp(-3))
+            .replace("__T2__", &test_timestamp(-2))
+            .replace("__T3__", &test_timestamp(-1))
+            .replace("__T4__", &test_timestamp(0));
+        fs::write(&rollout, content).unwrap();
 
         let session = parse_rollout(&rollout, &[], &HashMap::new()).unwrap();
 
