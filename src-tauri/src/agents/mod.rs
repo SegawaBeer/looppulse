@@ -804,6 +804,10 @@ pub fn now_seconds() -> i64 {
 }
 
 pub fn project_name_with_fallback(cwd: &str, fallback: &str) -> String {
+    if is_dated_codex_workspace_path(cwd) {
+        return fallback.to_string();
+    }
+
     let name = cwd
         .trim_end_matches('/')
         .rsplit('/')
@@ -824,12 +828,37 @@ pub fn normalize_project_display_name(name: &str, fallback: &str) -> String {
 fn is_technical_workspace_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower == "unknown"
+        || lower == "new-chat"
+        || lower == "chat"
         || lower == "tmp"
         || lower == "temp"
         || lower == "temporary"
         || lower.starts_with("files-mentioned-by-the-user")
         || lower.starts_with("uploaded-files")
         || lower.starts_with("codex-clipboard")
+}
+
+fn is_dated_codex_workspace_path(cwd: &str) -> bool {
+    let parts = cwd
+        .trim_end_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    parts.windows(3).any(|window| {
+        window[0] == "Documents" && window[1] == "Codex" && is_iso_date_segment(window[2])
+    })
+}
+
+fn is_iso_date_segment(segment: &str) -> bool {
+    let bytes = segment.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
 }
 
 pub fn base_capabilities() -> SessionCapabilities {
@@ -2184,6 +2213,20 @@ mod tests {
             "临时对话"
         );
         assert_eq!(project_name_with_fallback("/tmp", "临时对话"), "临时对话");
+        assert_eq!(
+            project_name_with_fallback(
+                "/Users/test/Documents/Codex/2026-06-21/ban",
+                "Codex 临时对话"
+            ),
+            "Codex 临时对话"
+        );
+        assert_eq!(
+            project_name_with_fallback(
+                "/Users/test/Documents/Codex/2026-06-21/new-chat",
+                "Codex 临时对话"
+            ),
+            "Codex 临时对话"
+        );
         assert_eq!(
             project_name_with_fallback("/Users/test/workspace", "临时对话"),
             "workspace"

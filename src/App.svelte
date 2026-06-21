@@ -363,7 +363,7 @@
       title: "点击菜单栏图标打开面板",
       summary: "再点击一次图标会收回面板；每张卡片代表一个正在被观察的 Agent 会话。",
       body: [
-        "简略视图适合快速扫状态，详细视图适合查看项目、模型、权限观察和告警原因。",
+        "列表适合快速扫状态；点击任意会话后，可以查看项目、模型、权限观察和告警原因。",
         "出现问题时，卡片里的“聚焦”可以把对应窗口找出来，减少在多个终端之间翻找。"
       ]
     },
@@ -418,7 +418,6 @@
   let codexRootDraft = $state("");
   let opencodeRootDraft = $state("");
   let settingsStatus = $state("设置已同步");
-  let listViewMode = $state<"full" | "compact">("full");
   let currentWindowLabel = $state("panel");
   let dashboardFilter = $state<"all" | "active" | "risk" | "pro">("all");
   let dashboardSort = $state<"risk" | "activity" | "tokens">("risk");
@@ -521,14 +520,6 @@
       const isDashboardWindow = currentWindowLabel === "dashboard";
       const isOnboardingWindow = currentWindowLabel === "onboarding";
       const shouldObserveSessions = isPanelWindow || isDashboardWindow;
-
-      try {
-        listViewMode = loadListViewMode();
-        logFrontend(`App listViewMode=${listViewMode}`);
-      } catch (error) {
-        listViewMode = "full";
-        logFrontend(`App loadListViewMode failed ${formatError(error)}`);
-      }
 
       void loadSettings();
       logFrontend("App loadSettings scheduled");
@@ -729,16 +720,6 @@
       mcp_servers: [],
       rate_limits: []
     };
-  }
-
-  function loadListViewMode(): "full" | "compact" {
-    const stored = localStorage.getItem("observer.listViewMode");
-    return stored === "compact" ? "compact" : "full";
-  }
-
-  function setListViewMode(mode: "full" | "compact") {
-    listViewMode = mode;
-    localStorage.setItem("observer.listViewMode", mode);
   }
 
   function isProPlan(): boolean {
@@ -1856,7 +1837,7 @@
   }
 
   function agentDisplayLabel(session: AgentSession): string {
-    if (session.agent_type === "Claude Code") return "Claude";
+    if (session.agent_type === "Claude Code") return "Claude CLI";
     if (session.agent_type === "Codex") return "Codex";
     if (session.agent_type === "OpenCode") return "OpenCode";
     return session.agent_type || "Agent";
@@ -1868,20 +1849,7 @@
     return "模型待识别";
   }
 
-  function modelInitial(session: AgentSession): string {
-    const model = normalizedModel(session.model).toLowerCase();
-    if (model.includes("sonnet")) return "S";
-    if (model.includes("opus")) return "O";
-    if (model.includes("haiku")) return "H";
-    if (model.includes("gpt")) return "G";
-    if (model.includes("kimi")) return "K";
-    if (model.includes("qwen")) return "Q";
-    if (model.includes("deepseek")) return "D";
-    if (model.includes("minimax")) return "M";
-    return agentInitial(session).slice(0, 1);
-  }
-
-  function modelToneClass(session: AgentSession): string {
+  function agentToneClass(session: AgentSession): string {
     const combined = `${session.agent_type} ${normalizedModel(session.model)}`.toLowerCase();
     if (combined.includes("claude")) return "tone-claude";
     if (combined.includes("codex") || combined.includes("gpt") || combined.includes("openai")) return "tone-openai";
@@ -2055,12 +2023,23 @@
 
   function shortModel(m: string | null): string {
     if (!m) return "";
-    return m
+    const tokens = m
       .replace(/^claude-/, "")
-      .replace(/-(\d+)-(\d+)$/, " $1.$2")
-      .split("-")
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(" ");
+      .replace(/[-_](?:20\d{6}|\d{8})(?=$|[-_])/g, "")
+      .split(/[-_\s/]+/)
+      .filter(Boolean);
+    const merged = [];
+    for (let index = 0; index < tokens.length; index += 1) {
+      const current = tokens[index];
+      const next = tokens[index + 1];
+      if (/^\d+$/.test(current) && next && /^\d+$/.test(next)) {
+        merged.push(`${current}.${next}`);
+        index += 1;
+      } else {
+        merged.push(current);
+      }
+    }
+    return merged.join(" ").toUpperCase();
   }
 
   function normalizedModel(model: string | null | undefined): string {
@@ -2136,7 +2115,7 @@
 
   function sessionSubtitle(session: AgentSession): string {
     const model = displayModel(session);
-    return [session.agent_type, model].filter(Boolean).join(" · ");
+    return model || "模型待识别";
   }
 
   function conversationTitle(session: AgentSession): string {
@@ -2148,34 +2127,6 @@
   function externalPrimaryLine(session: AgentSession): string {
     if (session.risks.length > 0) return session.risks[0].title;
     return livenessLabel(session);
-  }
-
-  function externalSecondaryLine(session: AgentSession): string {
-    const risk = session.risks[0];
-    if (risk) return risk.message || risk.evidence || risk.action || "需要你查看";
-    if (wasActive(session.status)) return conversationTitle(session);
-    if (["waiting", "idle"].includes(session.status)) return "暂无需要处理";
-    if (["done", "finished"].includes(session.status)) return "会话已停下";
-    return statusLabel(session.status);
-  }
-
-  function cardMessageLine(session: AgentSession): string {
-    const risk = session.risks[0];
-    if (risk) return risk.message || risk.evidence || risk.title || "需要你查看";
-    return externalSecondaryLine(session);
-  }
-
-  function cardStateColor(session: AgentSession): string {
-    const risk = session.risks[0];
-    return risk ? riskColor(risk.severity) : statusColor(session.status);
-  }
-
-  function cardPathLine(session: AgentSession): string {
-    return shortenPath(session.cwd) || "未识别项目位置";
-  }
-
-  function permissionChipLabels(session: AgentSession, limit = 2): string[] {
-    return topPermissions(session, limit).map((item) => item.label);
   }
 
   function safeTaskTitle(task: string | null | undefined): string {
@@ -3064,7 +3015,7 @@
               <button type="button" class={`session-row risk-${session.risk_level || "ok"}${selectedSessionId === session.session_id ? " active" : ""}`} onclick={() => selectSession(session)}>
                 <div class="session-cell-main">
                   <strong>{sessionTitle(session)}</strong>
-                  <span>{agentDisplayLabel(session)} · {modelBadgeLabel(session)}</span>
+                  <span>{modelBadgeLabel(session)}</span>
                 </div>
                 <div class="session-cell-status">
                   <i style="background:{signalColorForSession(session)}"></i>
@@ -3335,6 +3286,7 @@
   <header class="panel-pop-item" style="--pop-delay:36ms">
     <div class="header-text">
       <h1>
+        <img class="panel-title-icon" src={observerIconUrl} alt="" />
         LoopPulse
       </h1>
       {#if totalCount === 0}
@@ -3343,14 +3295,7 @@
         </p>
       {/if}
     </div>
-    <div class="health-stack">
-      {#if totalCount > 0 && !selectedSession}
-        <div class="view-toggle" aria-label="列表视图">
-          <button class:active={listViewMode === "full"} title="详细视图" onclick={() => setListViewMode("full")}>详</button>
-          <button class:active={listViewMode === "compact"} title="简洁视图" onclick={() => setListViewMode("compact")}>简</button>
-        </div>
-      {/if}
-    </div>
+    <div class="health-stack"></div>
   </header>
 
   {#if totalCount > 0 && !selectedSession}
@@ -3383,7 +3328,7 @@
     </section>
   {/if}
 
-  <div class="body" class:detail-mode={selectedSession !== null} class:compact-mode={selectedSession === null && listViewMode === "compact"}>
+  <div class="body" class:detail-mode={selectedSession !== null} class:compact-mode={selectedSession === null}>
     {#if selectedSession}
       <section class="detail-view">
         <div class="detail-nav panel-pop-item" style="--pop-delay:48ms">
@@ -3631,7 +3576,7 @@
         <div class="empty-title">暂无活跃的 Agent 会话</div>
         <div class="empty-sub">Claude Code 启动后将自动显示</div>
       </div>
-    {:else if listViewMode === "compact"}
+    {:else}
       <div class="compact-list">
         {#each sessions as session, index (sessionKey(session, index))}
           <div
@@ -3647,12 +3592,12 @@
                 style="background:{signalColorForSession(session)};
                        box-shadow:0 0 5px {signalColorForSession(session)}66">
               </span>
-              <div class="compact-title">
-                <div class="compact-title-line">
-                  <strong>{session.project_name || session.agent_type}</strong>
-                  <span class={`model-icon ${modelToneClass(session)}`} title={modelBadgeLabel(session)}>{modelInitial(session)}</span>
-                </div>
-                <span>{agentDisplayLabel(session)} · {modelBadgeLabel(session)}</span>
+                <div class="compact-title">
+                  <div class="compact-title-line">
+                    <strong>{session.project_name || session.agent_type}</strong>
+                    <span class={`agent-app-badge ${agentToneClass(session)}`} title={agentDisplayLabel(session)}>{agentDisplayLabel(session)}</span>
+                  </div>
+                <span>{modelBadgeLabel(session)}</span>
               </div>
             </div>
             <div class="compact-stats">
@@ -3678,66 +3623,6 @@
           </div>
         {/each}
       </div>
-    {:else}
-      {#each sessions as session, index (sessionKey(session, index))}
-        <div
-          class={`card panel-pop-item risk-${session.risk_level || "ok"}`}
-          style="--pop-delay:{popDelay(index, 132, 30)}"
-          role="button"
-          tabindex="0"
-          onclick={() => selectSession(session)}
-          onkeydown={(event) => handleSessionCardKeydown(event, session)}
-        >
-          <div class="card-top">
-            <div class="agent-left">
-              <span class={`status-dot pulse-${pulseToneForSession(session)}`}
-                style="background:{signalColorForSession(session)};
-                       box-shadow:0 0 5px {signalColorForSession(session)}66">
-              </span>
-              <span class="agent-name">{session.project_name || session.agent_type}</span>
-              <span class={`model-icon ${modelToneClass(session)}`} title={modelBadgeLabel(session)}>{modelInitial(session)}</span>
-            </div>
-            <div class="card-status-stack">
-              <span class="status-tag" style="color:{statusColor(session.status)}">
-                {statusLabel(session.status)}
-              </span>
-              <span class="last-seen">{lastActivityLabel(session)}</span>
-            </div>
-          </div>
-          <div class="session-meta-row">
-            <span class="agent-chip">{agentDisplayLabel(session)}</span>
-            <span class="model-chip">{modelBadgeLabel(session)}</span>
-            <span class="permission-count-chip">{permissionCompactLabel(session)}</span>
-          </div>
-          <div class="card-evidence-line" style="color:{cardStateColor(session)}">
-            {cardMessageLine(session)}
-          </div>
-          <div class="card-path-line" title={session.cwd}>
-            <span>位置</span>
-            <em>{cardPathLine(session)}</em>
-          </div>
-          <div class="card-bottom">
-            <div class="card-permissions">
-              {#if permissionChipLabels(session).length > 0}
-                {#each permissionChipLabels(session) as label}
-                  <span class="permission-chip">{label}</span>
-                {/each}
-              {:else}
-                <span class="meta-item">未发现高权限使用</span>
-              {/if}
-            </div>
-            <button
-              type="button"
-              class="focus-inline-btn"
-              aria-label={`聚焦 ${sessionTitle(session)}`}
-              onclick={(event) => {
-                event.stopPropagation();
-                void focusAgent(session);
-              }}
-            >聚焦</button>
-          </div>
-        </div>
-      {/each}
     {/if}
   </div>
 
@@ -5967,9 +5852,10 @@
 
   /* ── Header ── */
   header {
-    padding: 15px 20px 12px;
+    min-height: 58px;
+    padding: 11px 18px 11px 19px;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
     border-bottom: 1px solid var(--obs-border-soft);
@@ -5978,12 +5864,23 @@
   .header-text { flex: 1; min-width: 0; }
 
   h1 {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
     font-size: 21px;
     font-weight: 700;
     margin: 0 0 5px;
     letter-spacing: 0;
     line-height: 1.2;
     white-space: nowrap;
+  }
+
+  .panel-title-icon {
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+    object-fit: contain;
+    display: block;
   }
 
   .subtitle {
@@ -5998,8 +5895,10 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 4px;
-    margin-top: 1px;
+    justify-content: center;
+    gap: 5px;
+    min-width: 48px;
+    margin-top: 0;
   }
 
   .pro-pill {
@@ -6019,38 +5918,6 @@
   .pro-pill {
     color: var(--obs-text-secondary);
     border-color: var(--obs-border-muted);
-  }
-
-  .view-toggle {
-    display: inline-grid;
-    grid-template-columns: 1fr 1fr;
-    width: 48px;
-    height: 20px;
-    padding: 2px;
-    gap: 2px;
-    border-radius: var(--obs-control-radius);
-    background: var(--obs-surface-sunken);
-    border: 0.5px solid var(--obs-border-muted);
-  }
-
-  .view-toggle button {
-    appearance: none;
-    min-width: 0;
-    height: 15px;
-    border: 0;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--obs-text-muted);
-    font: inherit;
-    font-size: 9px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0;
-  }
-
-  .view-toggle button.active {
-    color: var(--obs-text-primary);
-    background: var(--obs-surface-hover);
   }
 
   .summary-strip {
@@ -6418,47 +6285,11 @@
     line-height: 1.5;
   }
 
-  /* ── Card ── */
-  .card {
-    appearance: none;
-    width: 100%;
-    text-align: left;
-    font: inherit;
-    color: inherit;
-    background: var(--obs-surface-card);
-    border-radius: var(--obs-card-radius);
-    padding: 8px 10px 7px;
-    cursor: pointer;
-    transition: background var(--obs-duration-fast) ease, border-color var(--obs-duration-fast) ease;
-    border: 0.5px solid var(--obs-border-soft);
-  }
-
-  .card.risk-critical {
-    background: var(--obs-status-critical-soft);
-    border-color: var(--obs-status-critical-border);
-  }
-
-  .card.risk-warning {
-    background: var(--obs-status-warning-soft);
-    border-color: var(--obs-status-warning-border);
-  }
-
-  .card.risk-info {
-    border-color: var(--obs-status-info-border);
-  }
-
-  .card:hover {
-    background: var(--obs-surface-pressed);
-    border-color: var(--obs-border-strong);
-  }
-
-  .card:focus-visible,
   .compact-row:focus-visible,
   .focus-inline-btn:focus-visible,
   .back-btn:focus-visible,
   .footer-btn:focus-visible,
   .mini-button:focus-visible,
-  .view-toggle button:focus-visible,
   .segmented button:focus-visible,
   .settings-tabs button:focus-visible,
   .agent-toggle-row button:focus-visible,
@@ -7129,23 +6960,6 @@
     color: rgba(255, 255, 255, 0.82);
   }
 
-  .card-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 5px;
-  }
-
-  .agent-left {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    flex: 1;
-    overflow: hidden;
-  }
-
   .status-dot {
     width: 6px;
     height: 6px;
@@ -7184,52 +6998,46 @@
     64% { transform: scale(0.78); opacity: 0.36; }
   }
 
-  .agent-name {
-    min-width: 0;
-    flex: 1 1 auto;
-    font-size: 12.5px;
-    font-weight: 600;
-    color: rgba(255, 255, 255, 0.95);
+  .agent-app-badge {
+    flex-shrink: 0;
+    max-width: 66px;
+    height: 17px;
+    padding: 0 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0;
+    line-height: 1;
+    border: 0.5px solid rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.88);
+    background: rgba(255, 255, 255, 0.08);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .model-icon {
-    flex-shrink: 0;
-    width: 17px;
-    height: 17px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 5px;
-    font-size: 8.5px;
-    font-weight: 800;
-    line-height: 1;
-    border: 0.5px solid rgba(255, 255, 255, 0.12);
-    color: rgba(255, 255, 255, 0.88);
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .model-icon.tone-claude {
+  .agent-app-badge.tone-claude {
     color: #ffb84d;
     border-color: rgba(255, 184, 77, 0.28);
     background: rgba(255, 184, 77, 0.11);
   }
 
-  .model-icon.tone-openai {
+  .agent-app-badge.tone-openai {
     color: #4cd4a0;
     border-color: rgba(76, 212, 160, 0.25);
     background: rgba(76, 212, 160, 0.10);
   }
 
-  .model-icon.tone-opencode {
+  .agent-app-badge.tone-opencode {
     color: #4ecaff;
     border-color: rgba(78, 202, 255, 0.25);
     background: rgba(78, 202, 255, 0.10);
   }
 
-  .model-icon.tone-cn {
+  .agent-app-badge.tone-cn {
     color: #ff7aa6;
     border-color: rgba(255, 122, 166, 0.25);
     background: rgba(255, 122, 166, 0.10);
@@ -7240,141 +7048,6 @@
     font-weight: 700;
     white-space: nowrap;
     flex-shrink: 0;
-  }
-
-  .card-status-stack {
-    flex-shrink: 0;
-    min-width: 76px;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 3px;
-  }
-
-  .cwd {
-    font-size: 10px;
-    color: #4ECAFF;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    margin-bottom: 5px;
-    font-family: "SF Mono", "Menlo", "Monaco", monospace;
-    letter-spacing: 0;
-  }
-
-  .session-meta-row {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    margin: 0 0 6px 22px;
-  }
-
-  .session-line {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    margin-bottom: 3px;
-  }
-
-  .agent-chip,
-  .model-chip,
-  .last-seen,
-  .permission-count-chip,
-  .locked-chip,
-  .risk-badge {
-    height: 16px;
-    display: inline-flex;
-    align-items: center;
-    border-radius: 5px;
-    padding: 0 6px;
-    font-size: 9px;
-    white-space: nowrap;
-    border: 0.5px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .agent-chip {
-    color: rgba(255, 255, 255, 0.58);
-    max-width: 78px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .model-chip {
-    color: rgba(255, 255, 255, 0.62);
-    flex: 1 1 auto;
-    max-width: none;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .last-seen {
-    color: rgba(255, 255, 255, 0.34);
-    background: transparent;
-    border-color: transparent;
-    padding: 0;
-    height: auto;
-  }
-
-  .permission-count-chip {
-    color: rgba(255, 255, 255, 0.46);
-    max-width: 86px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .card-state-line {
-    min-width: 0;
-    margin-left: 22px;
-    margin-bottom: 3px;
-    font-size: 10.5px;
-    font-weight: 700;
-    line-height: 1.28;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .card-evidence-line {
-    min-width: 0;
-    margin-left: 22px;
-    margin-bottom: 5px;
-    font-size: 9px;
-    line-height: 1.25;
-    color: rgba(255, 255, 255, 0.36);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .card-path-line {
-    min-width: 0;
-    margin-left: 22px;
-    margin-bottom: 6px;
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 6px;
-    font-size: 9px;
-    line-height: 1.22;
-    color: rgba(255, 255, 255, 0.34);
-  }
-
-  .card-path-line span {
-    color: rgba(255, 255, 255, 0.28);
-  }
-
-  .card-path-line em {
-    min-width: 0;
-    font-style: normal;
-    font-family: "SF Mono", "Menlo", "Monaco", monospace;
-    color: rgba(255, 255, 255, 0.42);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .metrics {
@@ -7428,61 +7101,6 @@
     display: block;
     height: 100%;
     border-radius: inherit;
-  }
-
-  .card-bottom {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 4px;
-    font-size: 9.5px;
-    color: rgba(255, 255, 255, 0.34);
-    min-width: 0;
-    margin-left: 22px;
-    overflow: hidden;
-  }
-
-  .card-permissions {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    overflow: hidden;
-  }
-
-  .meta-item { white-space: nowrap; }
-  .meta-sep { opacity: 0.5; }
-
-  .permission-chip {
-    height: 16px;
-    display: inline-flex;
-    align-items: center;
-    border-radius: 5px;
-    padding: 0 6px;
-    font-size: 9px;
-    color: #ffb84d;
-    white-space: nowrap;
-    border: 0.5px solid rgba(255, 184, 77, 0.22);
-    background: rgba(255, 184, 77, 0.10);
-  }
-
-  .risk-badge {
-    background: rgba(0, 0, 0, 0.12);
-    font-weight: 700;
-  }
-
-  .risk-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: rgba(255, 255, 255, 0.52);
-  }
-
-  .locked-chip {
-    margin-left: auto;
-    color: rgba(255, 255, 255, 0.56);
-    background: rgba(255, 255, 255, 0.09);
   }
 
   /* ── Footer ── */

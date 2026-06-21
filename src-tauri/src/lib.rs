@@ -40,6 +40,7 @@ const PANEL_HIDE_DUPLICATE_GUARD_MS: u64 = 620;
 const PANEL_AFTER_HIDE_EVENT_TAP_SUPPRESS_MS: u64 = 700;
 const PANEL_EVENT_TAP_AFTER_NATIVE_SUPPRESS_MS: u64 = 2_400;
 const STATUS_ITEM_WIDTH: f64 = 32.0;
+const STATUS_ITEM_USES_TEMPLATE_IMAGE: bool = false;
 const PANEL_LOG_PATH: &str = "/tmp/observer-panel.log";
 const INSTANCE_LOCK_PATH: &str = "/tmp/com.looppulse.menubar.lock";
 const LEGACY_INSTANCE_LOCK_PATH: &str = "/tmp/com.observer.menubar.lock";
@@ -1103,7 +1104,7 @@ fn apply_native_status_health_state(state: TrayHealthState, tooltip: &str) -> bo
         return false;
     };
 
-    image.setTemplate(true);
+    image.setTemplate(STATUS_ITEM_USES_TEMPLATE_IMAGE);
     image.setSize(objc2_foundation::NSSize {
         width: 22.0,
         height: 22.0,
