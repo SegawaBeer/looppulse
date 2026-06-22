@@ -1111,74 +1111,17 @@
     );
   }
 
-  async function handleSessionNotifications(nextSessions: AgentSession[]) {
-    if (currentWindowLabel !== "panel") {
-      return;
-    }
-    if (!notificationsPrimed) {
-      previousSessionState = snapshotSessions(nextSessions);
-      notificationsPrimed = true;
-      return;
-    }
-
-    if (!settings.notificationsEnabled) {
-      previousSessionState = snapshotSessions(nextSessions);
-      return;
-    }
-
-    const events = nextSessions.flatMap((session) => alertEventsForSession(session));
-    if (events.length === 0) {
-      previousSessionState = snapshotSessions(nextSessions);
-      return;
-    }
-
-    const permissionGranted = await requestNotificationAccess();
-    if (!permissionGranted) {
-      previousSessionState = snapshotSessions(nextSessions);
-      return;
-    }
-
-    for (const event of events) {
-      if (!shouldSendNotification(event.key)) continue;
-      await emitSystemNotification(event.title, event.body, event.sessionId);
-      notificationCooldowns.set(event.key, Date.now());
-    }
-
-    previousSessionState = snapshotSessions(nextSessions);
+  // 2026-06-22：通知派发已下沉到 Rust 后端（watcher → notifications 模块），
+  // 去重/冷却/首轮不补发都在后端进程内状态里完成，不再依赖 panel webview 常驻或其生命周期。
+  // 前端保留权限申请（设置开关时）与事件历史记录；这两个派发函数改为 no-op，避免重复通知。
+  // 历史保留的 alertEventsForSession / globalRiskKeys / globalAlertEvent / shouldSendNotification
+  // 仅作参考，已不在派发路径上。详见 DEV_NOTES.md。
+  async function handleSessionNotifications(_nextSessions: AgentSession[]) {
+    return;
   }
 
-  async function handleGlobalNotifications(snapshot: MonitorSnapshot) {
-    if (currentWindowLabel !== "panel") {
-      return;
-    }
-    const currentKeys = globalRiskKeys(snapshot);
-    if (!notificationsPrimed) {
-      previousGlobalRiskKeys = currentKeys;
-      return;
-    }
-    if (!settings.notificationsEnabled) {
-      previousGlobalRiskKeys = currentKeys;
-      return;
-    }
-
-    const newKeys = [...currentKeys].filter((key) => !previousGlobalRiskKeys.has(key));
-    if (newKeys.length === 0) {
-      previousGlobalRiskKeys = currentKeys;
-      return;
-    }
-    const permissionGranted = await requestNotificationAccess();
-    if (!permissionGranted) {
-      previousGlobalRiskKeys = currentKeys;
-      return;
-    }
-
-    for (const key of newKeys) {
-      const event = globalAlertEvent(key, snapshot);
-      if (!event || !shouldSendNotification(event.key)) continue;
-      await emitSystemNotification(event.title, event.body, event.sessionId);
-      notificationCooldowns.set(event.key, Date.now());
-    }
-    previousGlobalRiskKeys = currentKeys;
+  async function handleGlobalNotifications(_snapshot: MonitorSnapshot) {
+    return;
   }
 
   function globalRiskKeys(snapshot: MonitorSnapshot): Set<string> {

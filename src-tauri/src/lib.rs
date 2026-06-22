@@ -3,6 +3,7 @@ mod claude_statusline;
 mod events;
 mod focus;
 mod launch_agent;
+mod notifications;
 mod settings;
 mod watcher;
 
@@ -449,9 +450,20 @@ fn record_notification_target(session_id: Option<String>) -> Result<(), String> 
         return Ok(());
     }
 
-    let mut target = pending_notification_target()
-        .lock()
-        .map_err(|error| error.to_string())?;
+    record_pending_notification_target(session_id);
+    Ok(())
+}
+
+/// 非命令版本：供后端通知管理器在发送通知前写入待定定位目标。
+/// 与前端 `record_notification_target` 命令共用同一份 pending target 状态。
+pub(crate) fn record_pending_notification_target(session_id: String) {
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return;
+    }
+    let Ok(mut target) = pending_notification_target().lock() else {
+        return;
+    };
     *target = Some(PendingNotificationTarget {
         session_id: session_id.clone(),
         recorded_at: agents::now_seconds(),
@@ -459,7 +471,6 @@ fn record_notification_target(session_id: Option<String>) -> Result<(), String> 
     panel_log(&format!(
         "notification target: recorded session={session_id}"
     ));
-    Ok(())
 }
 
 #[tauri::command]
@@ -2193,7 +2204,7 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-fn panel_log(message: &str) {
+pub(crate) fn panel_log(message: &str) {
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)

@@ -106,8 +106,37 @@ opus/sonnet/haiku→200_000，未知→保守 200_000。测试 `context_window_m
 
 ## 待办 / 给 Codex 的提示
 
-- **PRD 回写**：本轮“context 不报警、改软提示”与“quota 两档预警”是对 PRD「Alert Types」一节
-  的实质调整。是否回写 PRD 正文，待用户确认后再做（用户已要求改 PRD 需先确认 + 加备注）。
+- **PRD 回写**：已于 2026-06-22 回写 PRD「Alert Types」一节（context 软提示 / quota 两档），
+  PRD 顶部加了修订记录。
 - Git 采集目前对每个会话 cwd 都尝试（5s 缓存）；若后续会话量很大，可考虑只对“项目型”会话采集。
-- 通知逻辑仍在前端 panel 窗口（架构债，PRD 要求后端 Notification Manager）。本轮未动，
-  如要迁移到 Rust，需把 `notificationCooldowns` / diff 逻辑下沉到 watcher。
+- ~~通知逻辑仍在前端 panel 窗口~~ → 已于 2026-06-22 下沉到后端，见下「通知管理器下沉」。
+
+---
+
+## 2026-06-22 通知管理器下沉到后端（by Claude / Ducc）
+
+**动机**：原通知的 diff / 去重 / 冷却 / 首轮不补发逻辑都在前端 panel 窗口的 JS 里，存在
+①panel webview 重载会清空冷却记录、可能重复轰炸；②dashboard 窗口不发通知；③通知完全依赖
+panel webview 常驻。与 PRD 架构图「Notification Manager（后端）」不符。
+
+**改动**：
+- 新增 `src-tauri/src/notifications.rs`：进程内全局 `NotificationState`（primed / cooldowns /
+  prev_session_risks / prev_session_status / prev_global_keys），用 `OnceLock<Mutex<…>>` 持有，
+  不随 webview 生命周期重置。`process_snapshot(app, snapshot, settings)` 每轮被 watcher 调用：
+  - 计算 per-session 新风险（critical/warning，按 notify_* 开关过滤，`quota_pressure` 跳过——
+    交全局通道按 source 去重）、完成事件（工作中→停下）、全局事件（孤儿端口/端口冲突/额度）。
+  - 首轮只建基线不补发；冷却用 `cooldown_minutes`；冷却表定期清理防膨胀。
+  - 发送前调用 `crate::record_pending_notification_target` 写入点击定位目标（复用既有兜底链路）。
+- `watcher.rs`：每轮在 emit 之后调用 `notifications::set_quota_critical_threshold` +
+  `notifications::process_snapshot`。
+- `lib.rs`：`panel_log` / `record_pending_notification_target` 提为 `pub(crate)`，
+  `record_notification_target` 命令复用后者。
+- `App.svelte`：`handleSessionNotifications` / `handleGlobalNotifications` 改为 no-op（保留签名
+  避免大改调用点）。前端仅保留：设置开关时的权限申请、用户手动“测试通知”、事件历史记录。
+  旧的 `alertEventsForSession` / `globalRiskKeys` / `globalAlertEvent` / `shouldSendNotification`
+  仍在文件中但已不在派发路径上，后续可清理。
+
+**注意**：quota 高危阈值通过 `set_quota_critical_threshold` 以线程局部传入 notifications 模块
+（watcher 单线程循环，安全）。若将来 process_snapshot 改为多线程调用，需改为显式传参。
+
+**验证**：`cargo fmt --check`、`cargo test --lib`（77 passed）、`pnpm build`、无警告。
