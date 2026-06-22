@@ -3612,8 +3612,8 @@
 
   .pro-feature-grid div {
     border-radius: 9px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(0, 0, 0, 0.16);
+    border: 1px solid var(--lp-border-subtle);
+    background: var(--lp-surface-sunken);
     padding: 13px;
   }
 
@@ -3649,7 +3649,7 @@
 
   .dashboard-sidebar {
     min-width: 0;
-    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    border-right: 1px solid var(--lp-border-subtle);
     background: rgba(7, 10, 14, 0.42);
     padding: 22px 16px;
     display: flex;
@@ -3711,7 +3711,7 @@
   .dash-kpi,
   .dashboard-inspector,
   .session-table-wrap {
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--lp-border-subtle);
     background: rgba(255, 255, 255, 0.038);
     border-radius: 8px;
   }
@@ -3871,7 +3871,7 @@
     padding: 3px;
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.055);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--lp-border-subtle);
   }
 
   .dash-sort button,
@@ -4089,7 +4089,7 @@
     padding: 3px;
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.055);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--lp-border-subtle);
   }
 
   .inspector-tabs button {
@@ -4113,7 +4113,7 @@
     border-radius: 8px;
     padding: 13px;
     background: rgba(255, 255, 255, 0.048);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--lp-border-subtle);
   }
 
   .inspector-health.risk-critical {
@@ -4381,7 +4381,7 @@
   .inspector-actions button {
     height: 32px;
     border-radius: 7px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--lp-border-subtle);
     background: rgba(255, 255, 255, 0.055);
     color: rgba(238, 243, 247, 0.72);
     font-size: 11px;
@@ -4881,7 +4881,7 @@
 
   .overview-signal-cell.active {
     background: var(--cell-color);
-    border-color: color-mix(in srgb, var(--cell-color) 42%, rgba(255,255,255,0.12));
+    border-color: color-mix(in srgb, var(--cell-color) 42%, var(--lp-border-default));
     opacity: 0.88;
     box-shadow:
       inset 0 0 0 0.5px color-mix(in srgb, var(--cell-color) 58%, rgba(255,255,255,0.16)),
@@ -5627,7 +5627,7 @@
     border-radius: 7px;
     background: rgba(255, 255, 255, 0.055);
     border: 0.5px solid rgba(255, 255, 255, 0.07);
-    color: rgba(255, 255, 255, 0.28);
+    color: var(--lp-text-faint);
     font-size: 9.5px;
     white-space: nowrap;
   }
@@ -5649,7 +5649,7 @@
     border-radius: 8px;
     padding: 9px 10px;
     background: rgba(255, 255, 255, 0.055);
-    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    border: 0.5px solid var(--lp-border-subtle);
   }
 
   .history-strip span,
@@ -5701,7 +5701,7 @@
     border-radius: 8px;
     padding: 8px 9px;
     background: rgba(255, 255, 255, 0.055);
-    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    border: 0.5px solid var(--lp-border-subtle);
   }
 
   .process-row span,
@@ -5734,7 +5734,7 @@
     border-radius: 7px;
     padding: 5px 7px;
     background: rgba(255, 255, 255, 0.055);
-    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    border: 0.5px solid var(--lp-border-subtle);
     color: rgba(255, 255, 255, 0.52);
     font-size: 9.5px;
     overflow: hidden;
@@ -5826,7 +5826,7 @@
     font-weight: 800;
     letter-spacing: 0;
     line-height: 1;
-    border: 0.5px solid rgba(255, 255, 255, 0.12);
+    border: 0.5px solid var(--lp-border-default);
     color: rgba(255, 255, 255, 0.88);
     background: rgba(255, 255, 255, 0.08);
     white-space: nowrap;
@@ -6429,7 +6429,7 @@
     min-width: 0;
     border-radius: 7px;
     background: rgba(255, 255, 255, 0.06);
-    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    border: 0.5px solid var(--lp-border-subtle);
     padding: 7px;
     display: flex;
     flex-direction: column;
@@ -6449,7 +6449,7 @@
     height: 23px;
     border-radius: 6px;
     border: 0.5px solid rgba(255, 255, 255, 0.10);
-    background: rgba(0, 0, 0, 0.16);
+    background: var(--lp-surface-sunken);
     color: rgba(255, 255, 255, 0.78);
     font: inherit;
     font-size: 10px;
@@ -6547,7 +6547,7 @@
     border-radius: 8px;
     padding: 8px 9px;
     background: rgba(255, 255, 255, 0.055);
-    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    border: 0.5px solid var(--lp-border-subtle);
   }
 
   .statusline-box div {
@@ -6693,7 +6693,7 @@
     overflow-x: hidden;
     margin-top: 8px;
     border-radius: 8px;
-    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    border: 0.5px solid var(--lp-border-subtle);
     background: rgba(0, 0, 0, 0.18);
     padding: 8px;
   }
