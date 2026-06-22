@@ -40,10 +40,23 @@ pub struct AppSettings {
     pub path_display_mode: String,
     #[serde(default = "default_remote_preview_fields")]
     pub remote_preview_fields: Vec<String>,
+    // context_warning_percent / context_critical_percent:
+    // 自 2026-06-22 起，这两个阈值不再驱动“告警/通知”。
+    // 原因：开发期会话的累计 context 必然单调增长，按阈值报警对每个长项目都会误触发，
+    //       且 Claude/Codex 会自动压缩上下文，用户对“快满了”无法采取有效行动（actionability 低）。
+    // 现状：仅用于详情页“上下文接近上限”的软提示展示门槛，不进风险引擎、不发通知。
+    // 详见 DEV_NOTES.md「2026-06-22 context 告警语义调整」。
     #[serde(default = "default_context_warning_percent")]
     pub context_warning_percent: f64,
     #[serde(default = "default_context_critical_percent")]
     pub context_critical_percent: f64,
+    // quota 周期限额预警两档（百分比）。替代旧的写死 90% 单档逻辑。
+    // notice = 注意档（warning 级），critical = 高危档（critical 级）。
+    // 数据来源为 Claude/Codex 官方 5 小时 / 7 天周期用量，详见 collect_rate_limits。
+    #[serde(default = "default_quota_notice_percent")]
+    pub quota_notice_percent: f64,
+    #[serde(default = "default_quota_critical_percent")]
+    pub quota_critical_percent: f64,
     #[serde(default = "default_stalled_warning_minutes")]
     pub stalled_warning_minutes: u64,
     #[serde(default = "default_stalled_critical_minutes")]
@@ -79,6 +92,8 @@ impl Default for AppSettings {
             remote_preview_fields: default_remote_preview_fields(),
             context_warning_percent: default_context_warning_percent(),
             context_critical_percent: default_context_critical_percent(),
+            quota_notice_percent: default_quota_notice_percent(),
+            quota_critical_percent: default_quota_critical_percent(),
             stalled_warning_minutes: default_stalled_warning_minutes(),
             stalled_critical_minutes: default_stalled_critical_minutes(),
             token_warning_threshold: default_token_warning_threshold(),
@@ -98,6 +113,10 @@ impl AppSettings {
         self.context_critical_percent = self
             .context_critical_percent
             .clamp(self.context_warning_percent + 1.0, 100.0);
+        self.quota_notice_percent = self.quota_notice_percent.clamp(50.0, 98.0);
+        self.quota_critical_percent = self
+            .quota_critical_percent
+            .clamp(self.quota_notice_percent + 1.0, 100.0);
         self.stalled_warning_minutes = self.stalled_warning_minutes.clamp(3, 120);
         self.stalled_critical_minutes = self
             .stalled_critical_minutes
@@ -341,6 +360,14 @@ fn default_context_warning_percent() -> f64 {
 
 fn default_context_critical_percent() -> f64 {
     95.0
+}
+
+fn default_quota_notice_percent() -> f64 {
+    75.0
+}
+
+fn default_quota_critical_percent() -> f64 {
+    90.0
 }
 
 fn default_stalled_warning_minutes() -> u64 {

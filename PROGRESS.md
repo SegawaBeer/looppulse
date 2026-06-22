@@ -34,6 +34,7 @@
 - 2026-06-07 完整测试轮次：完成机器侧完整测试，覆盖前端构建、Rust 格式、Rust 单测、diff 空白检查、debug app/dmg 打包、debug app 重启、native status item/event tap 安装、monitor snapshot、状态图标更新和副屏状态项点击定位。当前仅保留已知 deprecated warnings：`NSStatusItem::setTarget/setAction`、`NSApplication::activateIgnoringOtherApps`。
 - 2026-06-11 稳定点：完成 Agent 深度采集、风险/权限观察、Bevel 风格主面板优化、卡片/简表聚焦入口、CleanMyMac 风格面板开合动效和正式菜单栏图标替换；菜单栏图标改为 44x44 Retina 模板资源并关闭按钮自动缩放，提升与微信/输入法等原生状态栏图标的清晰度一致性。验证通过 `pnpm build`、`cargo fmt --check`、`cargo test`（51 passed）、`git diff --check`、`pnpm tauri build --debug`，debug app 已重启到 `/tmp/LoopPulseDebugRun/LoopPulse.app`。
 - 2026-06-11 体验收尾：统一呼吸灯/方块矩阵的告警优先颜色语义，黄色/红色告警不再显示绿色信号灯；“聚焦”增强为 TTY + 主/子进程 cwd + Terminal/iTerm 窗口/标签/session 名 + 终端内容多信号匹配；补充复杂多显示器纯函数测试，覆盖右侧、上方、下方副屏和窄可见区域定位。
+- 2026-06-22 全局诊断修复（详见 DEV_NOTES.md）：① context 不再触发告警，改为详情页软提示；② quota 周期限额预警从写死 90% 改为可配置两档（注意/高危）+ per-session 风险；③ 接线真实 Git 采集（此前恒为 None）；④ 假死 critical 结合 CPU/子进程信号消除误报；⑤ context_window_for_model 占位逻辑修正；⑥ lsof 加 cwd TTL 缓存 + 采集缓存 key 只取相关字段；⑦ 清理 NSStatusItem deprecated 警告。验证：`cargo fmt --check`、`cargo test --lib`（77 passed）、`pnpm build` 通过，无编译警告。
 
 ---
 
@@ -142,6 +143,7 @@ block2 = "0.6"
 - [x] P0 监控骨架：新增 `PRD.md`；扩展 Agent 会话模型；接入 Claude transcript / Codex rollout 基础采集；面板新增健康总览、context/token 指标、风险徽标和 Pro 信号占位。
 - [x] P0 面板交互：接入桌面通知权限与去重冷却设置；卡片点击进入会话详情；详情展示风险原因、token/context 分解、采集信号，并支持打开项目、复制路径和复制诊断摘要。
 - [x] P0 环境信号：详情页展示 Git 分支/dirty/ahead/behind 和监听端口摘要；风险引擎新增“工程改动较多”“空闲后仍有监听端口”的 Pro 诊断信号。
+  - ⚠️ 2026-06-22 修正记录：此前 Git 采集仅有结构与前端展示，但 `session.git` 在生产代码中恒为 `None`（未接线），实际从不显示。已于 2026-06-22 接入真实 `git status` 采集，详见 DEV_NOTES.md。
 - [x] Context 修正：不再把累计 token 压力显示成当前 CTX；当前上下文未知时展示“压力”并仅作为观察信号，避免长项目固定 100% 误报。
 - [x] 通知可验证性：开启通知时发送测试通知；设置面板说明触发条件（新高危/注意风险、限流、错误、工作中会话停下，首次加载不补发旧风险）。
 - [x] 列表密度优化：隐藏列表里的 Agent/model chip 和 Pro chip，压缩卡片间距与指标行，让小面板能显示更多项目。

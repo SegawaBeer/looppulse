@@ -1025,8 +1025,8 @@ fn install_native_status_item(app_handle: &tauri::AppHandle) {
         panel_log("native status item: custom overlay installed");
         custom_button = Some(overlay);
         unsafe {
-            status_item.setTarget(Some(target_object));
-            status_item.setAction(Some(objc2::sel!(observerNativeStatusClicked:)));
+            // 2026-06-22：移除已废弃的 NSStatusItem::setTarget/setAction，
+            // 改为只在 button 上设置 target/action（AppKit 官方推荐路径），消除 deprecated 警告。
             button.setTarget(Some(target_object));
             button.setAction(Some(objc2::sel!(observerNativeStatusClicked:)));
             let action_mask = objc2_app_kit::NSEventMask(

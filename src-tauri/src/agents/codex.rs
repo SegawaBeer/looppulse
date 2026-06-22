@@ -477,6 +477,7 @@ fn parse_rollout(
         context_pressure_percent,
         context_is_estimated: context_percent.is_none(),
         context_window,
+        process_cpu_percent: None,
         current_task,
         conversation_summary,
         tool_calls,

@@ -31,6 +31,11 @@ pub struct AgentSession {
     pub context_pressure_percent: Option<f64>,
     pub context_is_estimated: bool,
     pub context_window: Option<u64>,
+    // 主进程瞬时 CPU 占用（百分比）。由 finalize_session 在拿到进程快照后填充，
+    // 仅用于假死判定等运行期信号，采集器构造时统一置 None。
+    // 详见 DEV_NOTES.md「2026-06-22 假死告警结合 CPU/子进程信号」。
+    #[serde(default)]
+    pub process_cpu_percent: Option<f64>,
     pub current_task: Option<String>,
     #[serde(default)]
     pub conversation_summary: ConversationSummary,
@@ -484,6 +489,24 @@ struct TrackedPortProcess {
 
 static PORT_TRACKER: OnceLock<Mutex<HashMap<(u32, u16), TrackedPortProcess>>> = OnceLock::new();
 static SNAPSHOT_CACHE: OnceLock<Mutex<Option<CachedMonitorSnapshot>>> = OnceLock::new();
+// Git 采集结果缓存：key 为 cwd，value 为 (采集时间, 结果)。
+// git 命令相对昂贵，且仓库状态变化不需要秒级精度，因此独立做 TTL 缓存，
+// 避免每轮（默认 3s）刷新都对每个会话 spawn 多个 git 子进程。
+static GIT_CACHE: OnceLock<Mutex<HashMap<String, CachedGitInfo>>> = OnceLock::new();
+// 进程 cwd 缓存：key 为 pid。cwd 在进程生命周期内基本不变，按 TTL 缓存以降低 lsof 频率。
+static CWD_CACHE: OnceLock<Mutex<HashMap<u32, CachedCwd>>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct CachedCwd {
+    collected_at: Instant,
+    cwd: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGitInfo {
+    collected_at: Instant,
+    info: Option<GitInfo>,
+}
 
 #[derive(Debug, Clone)]
 struct CachedMonitorSnapshot {
@@ -542,7 +565,23 @@ fn snapshot_cache() -> &'static Mutex<Option<CachedMonitorSnapshot>> {
 }
 
 fn snapshot_settings_key(settings: &AppSettings) -> String {
-    serde_json::to_string(settings).unwrap_or_default()
+    // 仅纳入会“改变采集结果”的设置字段，避免无关的 UI/通知偏好（如 cooldown、
+    // notify_* 开关、path_display_mode 等）变动时白白让采集缓存失效、触发全量重采。
+    // 2026-06-22 修正：原实现把整个 AppSettings serde 成 JSON 当 key。
+    format!(
+        "plan={}|agents={:?}|hidden={:?}|claude={:?}|codex={:?}|opencode={:?}|stalled={}/{}|token={}|quota={}/{}",
+        settings.plan,
+        settings.enabled_agents,
+        settings.hidden_projects,
+        settings.claude_data_roots,
+        settings.codex_data_roots,
+        settings.opencode_data_roots,
+        settings.stalled_warning_minutes,
+        settings.stalled_critical_minutes,
+        settings.token_warning_threshold,
+        settings.quota_notice_percent,
+        settings.quota_critical_percent,
+    )
 }
 
 pub fn collect_monitor_snapshot(settings: &AppSettings) -> MonitorSnapshot {
@@ -586,6 +625,7 @@ pub fn collect_monitor_snapshot(settings: &AppSettings) -> MonitorSnapshot {
     let rate_limits = collect_rate_limits(settings);
     all = dedupe_sessions_by_identity(all);
     apply_rate_limit_status(&mut all, &rate_limits, settings);
+    apply_quota_risks(&mut all, &rate_limits, settings);
     let port_conflicts = detect_port_conflicts(&all);
     apply_port_conflict_risks(&mut all, &port_conflicts, settings);
     let orphan_ports = update_orphan_ports(&all, &processes, &mut port_cache);
@@ -736,6 +776,40 @@ pub(crate) fn pid_for_cwd(cwd: &str, live_pid_cwds: &[(u32, String)]) -> Option<
 }
 
 fn process_cwd(pid: u32) -> Option<String> {
+    // 进程 cwd 在其生命周期内几乎不变，因此按 pid 做 30s TTL 缓存，
+    // 避免每轮刷新对每个 agent PID 都 spawn 一次 lsof（默认 3s 刷新时开销明显）。
+    // 2026-06-22 性能优化，详见 DEV_NOTES.md。
+    const CWD_TTL: Duration = Duration::from_secs(30);
+    if let Ok(cache) = cwd_cache().lock() {
+        if let Some(cached) = cache.get(&pid) {
+            if cached.collected_at.elapsed() <= CWD_TTL {
+                return cached.cwd.clone();
+            }
+        }
+    }
+
+    let result = process_cwd_uncached(pid);
+    if let Ok(mut cache) = cwd_cache().lock() {
+        cache.insert(
+            pid,
+            CachedCwd {
+                collected_at: Instant::now(),
+                cwd: result.clone(),
+            },
+        );
+        // 防止长时间运行后缓存无限增长：超过 512 条时清掉过期项。
+        if cache.len() > 512 {
+            cache.retain(|_, entry| entry.collected_at.elapsed() <= CWD_TTL);
+        }
+    }
+    result
+}
+
+fn cwd_cache() -> &'static Mutex<HashMap<u32, CachedCwd>> {
+    CWD_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn process_cwd_uncached(pid: u32) -> Option<String> {
     let mut command = Command::new("lsof");
     command.args(["-F", "n", "-a", "-p", &pid.to_string(), "-d", "cwd"]);
     let output = command_output_with_timeout(command, Duration::from_millis(500)).ok()?;
@@ -758,6 +832,97 @@ fn normalize_path_for_match(path: &str) -> Option<String> {
     } else {
         Some(trimmed.to_ascii_lowercase())
     }
+}
+
+// Git 采集：对会话 cwd 调用 git 读取分支 / dirty / 改动文件数 / ahead / behind。
+// 结果按 cwd 做 5s TTL 缓存（GIT_CACHE），避免每轮刷新都 spawn git 子进程。
+// 2026-06-22 接线，详见 DEV_NOTES.md。
+fn git_info_for_cwd(cwd: &str) -> Option<GitInfo> {
+    let key = normalize_path_for_match(cwd)?;
+    const GIT_TTL: Duration = Duration::from_secs(5);
+
+    if let Ok(cache) = git_cache().lock() {
+        if let Some(cached) = cache.get(&key) {
+            if cached.collected_at.elapsed() <= GIT_TTL {
+                return cached.info.clone();
+            }
+        }
+    }
+
+    let info = collect_git_info(cwd);
+    if let Ok(mut cache) = git_cache().lock() {
+        cache.insert(
+            key,
+            CachedGitInfo {
+                collected_at: Instant::now(),
+                info: info.clone(),
+            },
+        );
+    }
+    info
+}
+
+fn git_cache() -> &'static Mutex<HashMap<String, CachedGitInfo>> {
+    GIT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn collect_git_info(cwd: &str) -> Option<GitInfo> {
+    let path = Path::new(cwd);
+    if cwd.is_empty() || !path.is_dir() {
+        return None;
+    }
+
+    // `git status --porcelain=v2 --branch` 一次性给出分支、ahead/behind 和逐文件状态，
+    // 比分多次调用更省进程。非 git 仓库时退出码非 0，直接返回 None。
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(cwd)
+        .args(["status", "--porcelain=v2", "--branch"]);
+    let output = command_output_with_timeout(command, Duration::from_millis(700)).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut branch = String::new();
+    let mut ahead = 0_u32;
+    let mut behind = 0_u32;
+    let mut changed_files = 0_u32;
+
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("# branch.head ") {
+            branch = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("# branch.ab ") {
+            // 形如 "+2 -1"
+            for token in rest.split_whitespace() {
+                if let Some(value) = token.strip_prefix('+') {
+                    ahead = value.parse().unwrap_or(0);
+                } else if let Some(value) = token.strip_prefix('-') {
+                    behind = value.parse().unwrap_or(0);
+                }
+            }
+        } else if line.starts_with('1')
+            || line.starts_with('2')
+            || line.starts_with('u')
+            || line.starts_with('?')
+        {
+            // 1=普通改动 2=重命名 u=未合并 ?=未跟踪，均计为一个改动文件。
+            changed_files = changed_files.saturating_add(1);
+        }
+    }
+
+    if branch.is_empty() || branch == "(detached)" {
+        branch = "(detached)".to_string();
+    }
+
+    Some(GitInfo {
+        branch,
+        is_dirty: changed_files > 0,
+        changed_files,
+        ahead,
+        behind,
+    })
 }
 
 fn normalize_project_name_for_match(name: &str) -> Option<String> {
@@ -895,7 +1060,12 @@ fn finalize_session(
     if let Some(pid) = session.pid {
         session.children = collect_child_processes(pid, processes, children_map, port_cache);
         session.ports = collect_session_ports(pid, &session.children, port_cache);
+        // 记录主进程瞬时 CPU，供假死判定使用（高 CPU 长任务不应判为无响应）。
+        session.process_cpu_percent = processes.get(&pid).map(|info| info.cpu_percent);
     }
+    // Git 采集：按会话 cwd 读取分支 / dirty / ahead / behind（带超时与缓存）。
+    // 2026-06-22 接线：此前 git 字段在生产代码中恒为 None，git_dirty_heavy 风险从不触发。
+    session.git = git_info_for_cwd(&session.cwd);
     session.capabilities.ports = !session.ports.is_empty();
     session.capabilities.process_tree = !session.children.is_empty();
     session.capabilities.subagents = !session.subagents.is_empty();
@@ -1730,6 +1900,109 @@ fn apply_rate_limit_status(
     }
 }
 
+// quota 周期限额预警（2026-06-22）：把官方 5 小时 / 7 天周期用量做成 per-session 风险，
+// 让每个会话在详情页/工作台能看到“限额接近耗尽”。两档阈值可配置：
+//   >= quota_notice_percent   → warning「额度即将用尽」
+//   >= quota_critical_percent → critical「额度接近上限」
+// 注意：通知去重仍由前端按“额度来源”做（claude/codex 各最多一条），此处只产出 UI 风险，
+//       不会因为开了多个同源会话而重复通知。详见 DEV_NOTES.md。
+fn apply_quota_risks(
+    sessions: &mut [AgentSession],
+    rate_limits: &[RateLimitInfo],
+    settings: &AppSettings,
+) {
+    if rate_limits.is_empty() {
+        return;
+    }
+
+    for session in sessions {
+        // 已经是 rate_limited（已触顶）的会话由 rate_limited 风险覆盖，避免重复。
+        if session.status == "rate_limited" {
+            continue;
+        }
+        let source = agent_rate_source(&session.agent_type);
+        let Some(limit) = rate_limits
+            .iter()
+            .filter(|limit| limit.source.eq_ignore_ascii_case(source))
+            .max_by(|a, b| quota_peak(a).total_cmp(&quota_peak(b)))
+        else {
+            continue;
+        };
+
+        let peak = quota_peak(limit);
+        if peak < settings.quota_notice_percent {
+            continue;
+        }
+
+        let critical = peak >= settings.quota_critical_percent;
+        let severity = if critical { "critical" } else { "warning" };
+        let title = if critical {
+            "额度接近上限"
+        } else {
+            "额度即将用尽"
+        };
+        let reset_hint = quota_reset_hint(limit);
+        let evidence = format!(
+            "5 小时窗口：{}；7 天窗口：{}。{}",
+            quota_percent_label(limit.five_hour_percent),
+            quota_percent_label(limit.seven_day_percent),
+            reset_hint,
+        );
+        session.risks.push(risk(
+            "quota_pressure",
+            severity,
+            title,
+            "Agent 当前账号的官方周期用量已接近阈值，继续高强度运行可能触发限流。",
+            &evidence,
+            "考虑放缓节奏、切换模型/账号，或等待额度窗口恢复后再继续重任务。",
+            "rate_limit",
+            "medium",
+            Some("quota_pressure".to_string()),
+            false,
+        ));
+        // 重新计算 risk_level，使新风险纳入整体等级；保持与其它风险注入路径一致。
+        session.risk_level = session
+            .risks
+            .iter()
+            .map(|risk| risk.severity.as_str())
+            .max_by_key(|severity| severity_rank(severity))
+            .unwrap_or("ok")
+            .to_string();
+    }
+}
+
+fn quota_peak(limit: &RateLimitInfo) -> f64 {
+    limit
+        .five_hour_percent
+        .unwrap_or(0.0)
+        .max(limit.seven_day_percent.unwrap_or(0.0))
+}
+
+fn quota_percent_label(value: Option<f64>) -> String {
+    value
+        .map(|percent| format!("{percent:.0}%"))
+        .unwrap_or_else(|| "未知".to_string())
+}
+
+fn quota_reset_hint(limit: &RateLimitInfo) -> String {
+    let reset = limit
+        .five_hour_resets_at
+        .filter(|_| limit.five_hour_percent >= limit.seven_day_percent)
+        .or(limit.seven_day_resets_at)
+        .or(limit.five_hour_resets_at);
+    match reset {
+        Some(ts) => {
+            let remaining = ts.saturating_sub(now_seconds());
+            if remaining > 0 {
+                format!("预计 {} 后恢复。", format_duration_minutes(remaining))
+            } else {
+                "额度窗口应已开始恢复。".to_string()
+            }
+        }
+        None => String::new(),
+    }
+}
+
 fn agent_rate_source(agent_type: &str) -> &str {
     if agent_type.eq_ignore_ascii_case("Codex") {
         "codex"
@@ -1896,19 +2169,39 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
     let mut risks = Vec::new();
     let now = now_seconds();
     let inactive_secs = now.saturating_sub(session.last_activity_at);
+    // 假死多信号判定（2026-06-22）：仅在“长时间无新活动”之外，进一步要求
+    // 主进程 CPU 低且没有正在活跃的子进程，才升级为 critical「疑似无响应」。
+    // 否则一个高 CPU 跑长任务（大型构建 / 长测试 / 长推理）但 transcript 暂无新行的
+    // 会话会被误判为无响应。CPU 信号缺失（None）时按“可能空闲”保守处理，仍可升级。
+    let cpu_idle = session
+        .process_cpu_percent
+        .map(|cpu| cpu < 5.0)
+        .unwrap_or(true);
+    let children_active = session
+        .children
+        .iter()
+        .any(|child| child.cpu_percent >= 5.0);
+    let looks_stalled = cpu_idle && !children_active;
+    let in_working_status = matches!(session.status.as_str(), "thinking" | "executing" | "busy");
+
     if inactive_secs >= settings.stalled_critical_minutes as i64 * 60
-        && matches!(session.status.as_str(), "thinking" | "executing" | "busy")
+        && in_working_status
+        && looks_stalled
     {
         risks.push(risk(
             "stalled",
             "critical",
             "疑似无响应",
-            "Agent 仍显示工作中，但长时间没有采集到新的活动信号。",
+            "Agent 仍显示工作中，但长时间没有新活动信号，且主进程/子进程 CPU 均接近空闲。",
             &format!(
-                "状态：{}；最后活动：{}；阈值：{} 分钟。",
+                "状态：{}；最后活动：{}；阈值：{} 分钟；主进程 CPU：{}。",
                 session.status,
                 format_duration_minutes(inactive_secs),
-                settings.stalled_critical_minutes
+                settings.stalled_critical_minutes,
+                session
+                    .process_cpu_percent
+                    .map(|cpu| format!("{cpu:.0}%"))
+                    .unwrap_or_else(|| "未知".to_string()),
             ),
             "打开 Agent 或终端确认是否卡在审批、网络或工具调用；确认无用后再终止。",
             "activity_gap",
@@ -1916,22 +2209,30 @@ fn derive_risks(session: &AgentSession, settings: &AppSettings) -> Vec<SessionRi
             Some("stalled_inactive".to_string()),
             true,
         ));
-    } else if inactive_secs >= settings.stalled_warning_minutes as i64 * 60
-        && matches!(session.status.as_str(), "thinking" | "executing" | "busy")
-    {
+    } else if inactive_secs >= settings.stalled_warning_minutes as i64 * 60 && in_working_status {
+        // warning 档保持“长时间无进展”的观察提示。若 CPU 仍在忙，文案说明可能在跑长任务。
+        let busy_hint = if looks_stalled {
+            "Agent 可能仍在等待外部条件。"
+        } else {
+            "但仍检测到 CPU 活动，可能在执行长任务，建议先观察。"
+        };
         risks.push(risk(
             "stalled_watch",
             "warning",
             "长时间无进展",
             &format!(
-                "超过 {} 分钟没有检测到新活动，Agent 可能仍在等待外部条件。",
-                settings.stalled_warning_minutes
+                "超过 {} 分钟没有检测到新活动，{}",
+                settings.stalled_warning_minutes, busy_hint
             ),
             &format!(
-                "状态：{}；最后活动：{}；阈值：{} 分钟。",
+                "状态：{}；最后活动：{}；阈值：{} 分钟；主进程 CPU：{}。",
                 session.status,
                 format_duration_minutes(inactive_secs),
-                settings.stalled_warning_minutes
+                settings.stalled_warning_minutes,
+                session
+                    .process_cpu_percent
+                    .map(|cpu| format!("{cpu:.0}%"))
+                    .unwrap_or_else(|| "未知".to_string()),
             ),
             "先观察或聚焦 Agent；如果后续仍无日志、token 或工具信号，再按无响应处理。",
             "activity_gap",
@@ -2400,6 +2701,100 @@ mod tests {
     }
 
     #[test]
+    fn stalled_critical_requires_idle_cpu() {
+        // 高 CPU 长任务即使长时间无新活动，也不应升级为 critical「疑似无响应」。
+        let mut settings = AppSettings::default();
+        settings.stalled_warning_minutes = 5;
+        settings.stalled_critical_minutes = 20;
+        let mut session = sample_session();
+        session.status = "executing".to_string();
+        session.last_activity_at = now_seconds() - 25 * 60;
+        session.process_cpu_percent = Some(85.0);
+
+        let risks = derive_risks(&session, &settings);
+
+        assert!(
+            !risks.iter().any(|risk| risk.kind == "stalled"),
+            "高 CPU 时不应触发 critical 假死"
+        );
+        assert!(risks.iter().any(|risk| risk.kind == "stalled_watch"));
+    }
+
+    #[test]
+    fn stalled_critical_fires_when_cpu_idle() {
+        let mut settings = AppSettings::default();
+        settings.stalled_warning_minutes = 5;
+        settings.stalled_critical_minutes = 20;
+        let mut session = sample_session();
+        session.status = "executing".to_string();
+        session.last_activity_at = now_seconds() - 25 * 60;
+        session.process_cpu_percent = Some(0.2);
+
+        let risks = derive_risks(&session, &settings);
+
+        assert!(risks
+            .iter()
+            .any(|risk| risk.kind == "stalled" && risk.severity == "critical"));
+    }
+
+    #[test]
+    fn quota_pressure_risk_uses_two_tiers() {
+        let mut settings = AppSettings::default();
+        settings.quota_notice_percent = 75.0;
+        settings.quota_critical_percent = 90.0;
+
+        let rate_limits = vec![RateLimitInfo {
+            source: "codex".to_string(),
+            five_hour_percent: Some(92.0),
+            five_hour_resets_at: Some(now_seconds() + 3600),
+            seven_day_percent: Some(40.0),
+            seven_day_resets_at: None,
+            updated_at: Some(now_seconds()),
+        }];
+
+        let mut sessions = vec![sample_session()];
+        sessions[0].agent_type = "Codex".to_string();
+        sessions[0].status = "executing".to_string();
+
+        apply_quota_risks(&mut sessions, &rate_limits, &settings);
+
+        let risk = sessions[0]
+            .risks
+            .iter()
+            .find(|risk| risk.kind == "quota_pressure")
+            .expect("应产生 quota_pressure 风险");
+        assert_eq!(risk.severity, "critical");
+        assert_eq!(sessions[0].risk_level, "critical");
+    }
+
+    #[test]
+    fn quota_pressure_below_notice_is_silent() {
+        let mut settings = AppSettings::default();
+        settings.quota_notice_percent = 75.0;
+        settings.quota_critical_percent = 90.0;
+
+        let rate_limits = vec![RateLimitInfo {
+            source: "codex".to_string(),
+            five_hour_percent: Some(50.0),
+            five_hour_resets_at: None,
+            seven_day_percent: Some(60.0),
+            seven_day_resets_at: None,
+            updated_at: Some(now_seconds()),
+        }];
+
+        let mut sessions = vec![sample_session()];
+        sessions[0].agent_type = "Codex".to_string();
+        sessions[0].status = "executing".to_string();
+
+        apply_quota_risks(&mut sessions, &rate_limits, &settings);
+
+        assert!(!sessions[0]
+            .risks
+            .iter()
+            .any(|risk| risk.kind == "quota_pressure"));
+    }
+
+    #[test]
     fn listening_ports_after_idle_are_pro_info_signal() {
         let settings = AppSettings::default();
         let mut session = sample_session();
@@ -2653,6 +3048,7 @@ mod tests {
             context_pressure_percent: None,
             context_is_estimated: true,
             context_window: Some(100_000),
+            process_cpu_percent: None,
             current_task: None,
             conversation_summary: ConversationSummary::default(),
             tool_calls: vec![],

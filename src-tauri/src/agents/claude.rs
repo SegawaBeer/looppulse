@@ -439,6 +439,7 @@ fn parse_transcript(
         context_pressure_percent,
         context_is_estimated: context_percent.is_none(),
         context_window,
+        process_cpu_percent: None,
         current_task,
         conversation_summary,
         tool_calls,
@@ -511,6 +512,7 @@ fn parse_session_file(path: &PathBuf) -> Option<AgentSession> {
         context_pressure_percent: None,
         context_is_estimated: true,
         context_window: None,
+        process_cpu_percent: None,
         current_task: None,
         conversation_summary: ConversationSummary::default(),
         tool_calls: vec![],
@@ -694,12 +696,20 @@ fn classify_error_text(text: &str) -> Option<String> {
     }
 }
 
+// 按模型名映射上下文窗口大小。2026-06-22 修正：原实现两个分支都返回 200_000（占位）。
+// 默认 200k，已知更大窗口的模型单独识别，便于未来接入 1M 上下文模型时百分比计算正确。
 fn context_window_for_model(model: &str) -> u64 {
-    if model.contains("opus-4") || model.contains("sonnet-4") {
-        200_000
-    } else {
-        200_000
+    let lower = model.to_ascii_lowercase();
+    // 显式 1M 上下文标记（如 sonnet 的 1m beta / 带 -1m 后缀的模型）。
+    if lower.contains("1m") || lower.contains("-1m") {
+        return 1_000_000;
     }
+    // Claude 主线模型当前标准窗口为 200k。
+    if lower.contains("opus") || lower.contains("sonnet") || lower.contains("haiku") {
+        return 200_000;
+    }
+    // 未知模型给一个保守默认，避免 0 导致百分比无法计算。
+    200_000
 }
 
 fn decode_project_path(name: &str) -> String {
@@ -807,6 +817,16 @@ fn collect_memory_status(memory_dir: &Path) -> MemoryInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_window_maps_known_and_large_models() {
+        assert_eq!(context_window_for_model("claude-opus-4-8"), 200_000);
+        assert_eq!(context_window_for_model("claude-sonnet-4-6"), 200_000);
+        assert_eq!(context_window_for_model("claude-haiku-4-5"), 200_000);
+        assert_eq!(context_window_for_model("claude-sonnet-4-1m"), 1_000_000);
+        // 未知模型给保守默认，避免 0 导致百分比无法计算。
+        assert_eq!(context_window_for_model("some-future-model"), 200_000);
+    }
 
     #[test]
     fn parses_recent_tool_use_transcript() {
@@ -1141,6 +1161,7 @@ mod tests {
             context_pressure_percent: None,
             context_is_estimated: true,
             context_window: None,
+            process_cpu_percent: None,
             current_task: None,
             conversation_summary: ConversationSummary::default(),
             tool_calls: vec![],

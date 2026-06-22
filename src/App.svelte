@@ -246,6 +246,8 @@
     remotePreviewFields: string[];
     contextWarningPercent: number;
     contextCriticalPercent: number;
+    quotaNoticePercent: number;
+    quotaCriticalPercent: number;
     stalledWarningMinutes: number;
     stalledCriticalMinutes: number;
     tokenWarningThreshold: number;
@@ -702,6 +704,8 @@
       remotePreviewFields: ["identity", "status", "risk", "tokens", "context", "path", "environment"],
       contextWarningPercent: 85,
       contextCriticalPercent: 95,
+      quotaNoticePercent: 75,
+      quotaCriticalPercent: 90,
       stalledWarningMinutes: 15,
       stalledCriticalMinutes: 30,
       tokenWarningThreshold: 80_000,
@@ -870,6 +874,8 @@
     next.refreshIntervalSeconds = clampNumber(next.refreshIntervalSeconds, 2, 60);
     next.contextWarningPercent = clampNumber(next.contextWarningPercent, 50, 98);
     next.contextCriticalPercent = clampNumber(next.contextCriticalPercent, next.contextWarningPercent + 1, 100);
+    next.quotaNoticePercent = clampNumber(next.quotaNoticePercent, 50, 98);
+    next.quotaCriticalPercent = clampNumber(next.quotaCriticalPercent, next.quotaNoticePercent + 1, 100);
     next.stalledWarningMinutes = clampNumber(next.stalledWarningMinutes, 3, 120);
     next.stalledCriticalMinutes = clampNumber(next.stalledCriticalMinutes, next.stalledWarningMinutes + 1, 240);
     next.tokenWarningThreshold = clampNumber(next.tokenWarningThreshold, 10_000, 5_000_000);
@@ -1184,7 +1190,11 @@
       keys.add(`global:port-conflict:${conflict.protocol}:${conflict.port}`);
     }
     for (const limit of snapshot.rate_limits) {
-      if ((limit.five_hour_percent ?? 0) >= 90 || (limit.seven_day_percent ?? 0) >= 90) {
+      // 周期限额预警：达到“注意档”即纳入全局通知去重（按 source，claude/codex 各最多一条）。
+      // 阈值改为可配置（quotaNoticePercent），替代旧的写死 90%。
+      // per-session 的 quota_pressure 风险由后端产出、仅用于 UI 展示，不在此处重复通知。
+      const peak = Math.max(limit.five_hour_percent ?? 0, limit.seven_day_percent ?? 0);
+      if (peak >= settings.quotaNoticePercent) {
         keys.add(`global:quota:${limit.source}`);
       }
     }
@@ -1218,11 +1228,13 @@
       const source = key.replace("global:quota:", "");
       const limit = snapshot.rate_limits.find((item) => item.source === source);
       if (!limit) return null;
+      const peak = Math.max(limit.five_hour_percent ?? 0, limit.seven_day_percent ?? 0);
+      const critical = peak >= settings.quotaCriticalPercent;
       return {
         key,
-        title: `LoopPulse · ${source} 限额接近耗尽`,
+        title: critical ? `LoopPulse · ${source} 额度接近上限` : `LoopPulse · ${source} 额度即将用尽`,
         body: rateLimitLabel(limit),
-        severity: "critical",
+        severity: critical ? "critical" : "warning",
         sessionId: ""
       };
     }
@@ -1437,12 +1449,22 @@
     void saveSettings();
   }
 
-  function setContextWarning(percent: number) {
-    if (!requirePro("告警阈值细调", "alerts")) return;
-    settings.contextWarningPercent = percent;
-    if (settings.contextCriticalPercent <= percent) {
-      settings.contextCriticalPercent = Math.min(100, percent + 10);
+  // context 阈值不再驱动告警（见诊断：累计 context 必然增长、actionability 低）。
+  // 保留字段仅用于详情页“接近上限”软提示门槛。此处改为提供 quota 两档阈值设置。
+  function setQuotaNotice(percent: number) {
+    if (!requirePro("额度预警阈值细调", "alerts")) return;
+    settings.quotaNoticePercent = percent;
+    if (settings.quotaCriticalPercent <= percent) {
+      settings.quotaCriticalPercent = Math.min(100, percent + 10);
     }
+    showSettingsFeedback("额度预警阈值已更新。", "alerts", "ok");
+    void saveSettings();
+  }
+
+  function setQuotaCritical(percent: number) {
+    if (!requirePro("额度预警阈值细调", "alerts")) return;
+    settings.quotaCriticalPercent = Math.max(percent, settings.quotaNoticePercent + 1);
+    showSettingsFeedback("额度高危阈值已更新。", "alerts", "ok");
     void saveSettings();
   }
 
@@ -1962,6 +1984,18 @@
     return session.context_percent === null || session.context_percent === undefined
       ? "压力"
       : "CTX";
+  }
+
+  // 上下文“接近上限”软提示（不报警、不通知，仅 UI 展示）。
+  // 仅当存在真实 context_percent（非累计压力估算）且达到 contextWarningPercent 时显示。
+  // Claude/Codex 会自动压缩上下文，因此这里只提示“可能即将整理”，不视为风险。
+  function contextNearLimitHint(session: AgentSession): string | null {
+    const percent = session.context_percent;
+    if (percent === null || percent === undefined) return null;
+    if (percent < settings.contextWarningPercent) return null;
+    return percent >= settings.contextCriticalPercent
+      ? "上下文接近窗口上限，模型可能很快自动整理对话。"
+      : "上下文使用率较高，接近上限时会自动整理。";
   }
 
   function pressureLabel(session: AgentSession): string {
@@ -3379,6 +3413,12 @@
           </div>
         </div>
 
+        {#if contextNearLimitHint(selectedSession)}
+          <div class="context-soft-hint panel-pop-item" style="--pop-delay:128ms">
+            {contextNearLimitHint(selectedSession)}
+          </div>
+        {/if}
+
         <div class="detail-section panel-pop-item" style="--pop-delay:150ms">
           <div class="section-title">
             <span>会话摘要</span>
@@ -3830,7 +3870,36 @@
               <option value={300000}>300k</option>
             </select>
           </label>
+          <label>
+            <span>额度预警</span>
+            <select
+              disabled={!isProPlan()}
+              bind:value={settings.quotaNoticePercent}
+              onchange={() => setQuotaNotice(settings.quotaNoticePercent)}
+            >
+              <option value={60}>60%</option>
+              <option value={70}>70%</option>
+              <option value={75}>75%</option>
+              <option value={85}>85%</option>
+            </select>
+          </label>
+          <label>
+            <span>额度高危</span>
+            <select
+              disabled={!isProPlan()}
+              bind:value={settings.quotaCriticalPercent}
+              onchange={() => setQuotaCritical(settings.quotaCriticalPercent)}
+            >
+              <option value={85}>85%</option>
+              <option value={90}>90%</option>
+              <option value={95}>95%</option>
+              <option value={98}>98%</option>
+            </select>
+          </label>
         </div>
+        <p class="threshold-note">
+          额度预警基于 Claude / Codex 官方 5 小时 / 7 天周期用量；上下文使用率不再触发告警，仅在会话详情页作软提示展示。
+        </p>
       </div>
 
       {:else if settingsTab === "data"}
@@ -7655,6 +7724,24 @@
 
   .threshold-grid select {
     padding: 0 4px;
+  }
+
+  .threshold-note {
+    margin: 8px 0 0;
+    font-size: 11px;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.46);
+  }
+
+  .context-soft-hint {
+    margin: 8px 0 0;
+    padding: 8px 11px;
+    border-radius: 9px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: rgba(255, 214, 138, 0.92);
+    background: rgba(255, 184, 84, 0.1);
+    border: 1px solid rgba(255, 184, 84, 0.22);
   }
 
   .data-root-group {
