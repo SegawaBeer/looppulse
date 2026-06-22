@@ -1,5 +1,6 @@
 import { mount } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
+import "./styles/tokens.css";
 import App from "./App.svelte";
 
 function logFrontend(message: string) {

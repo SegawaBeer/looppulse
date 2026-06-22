@@ -1,0 +1,157 @@
+/* ============================================================
+   LoopPulse Design Tokens (--lp-*)
+   规范来源：docs/design/DESIGN_SYSTEM.md（v1，2026-06-22 确认）
+   组件拆分阶段（2026-06-22）从 App.svelte 的 <style> 抽出为独立文件，
+   经 main.ts 全局引入。等价替换，不改任何取值。
+   旧 --obs-* 作为别名指向新 --lp-*，组件逐步替换使用处后删除别名层。
+   ============================================================ */
+
+:root {
+  /* 背景层（不透明基底） */
+  --lp-bg-app: #16181c;
+  --lp-bg-panel-top: rgba(34, 40, 47, 0.985);
+  --lp-bg-panel-bottom: rgba(13, 17, 21, 0.99);
+  --lp-bg-sidebar: rgba(8, 11, 15, 0.55);
+  --lp-bg-float: rgba(20, 24, 30, 0.96);
+
+  /* Surface（半透明叠加面） */
+  --lp-surface-1: rgba(255, 255, 255, 0.05);
+  --lp-surface-2: rgba(255, 255, 255, 0.08);
+  --lp-surface-3: rgba(255, 255, 255, 0.11);
+  --lp-surface-hover: rgba(255, 255, 255, 0.14);
+  --lp-surface-pressed: rgba(255, 255, 255, 0.18);
+  --lp-surface-sunken: rgba(0, 0, 0, 0.16);
+
+  /* 边框 */
+  --lp-border-subtle: rgba(255, 255, 255, 0.08);
+  --lp-border-default: rgba(255, 255, 255, 0.12);
+  --lp-border-strong: rgba(255, 255, 255, 0.18);
+
+  /* 文本（统一为暗底纯白透明） */
+  --lp-text-strong: #ffffff;
+  --lp-text-primary: rgba(255, 255, 255, 0.92);
+  --lp-text-secondary: rgba(255, 255, 255, 0.60);
+  --lp-text-muted: rgba(255, 255, 255, 0.40);
+  --lp-text-faint: rgba(255, 255, 255, 0.28);
+
+  /* 状态 / 风险语义色（基色 + soft + border 三件套） */
+  --lp-ok: #4cd4a0;
+  --lp-ok-soft: rgba(76, 212, 160, 0.12);
+  --lp-ok-border: rgba(76, 212, 160, 0.26);
+  --lp-work: #ff9a3c;
+  --lp-work-soft: rgba(255, 154, 60, 0.12);
+  --lp-work-border: rgba(255, 154, 60, 0.26);
+  --lp-warning: #ffb84d;
+  --lp-warning-soft: rgba(255, 184, 77, 0.12);
+  --lp-warning-border: rgba(255, 184, 77, 0.26);
+  --lp-critical: #ff5c7a;
+  --lp-critical-soft: rgba(255, 92, 122, 0.12);
+  --lp-critical-border: rgba(255, 92, 122, 0.26);
+  --lp-info: #4ecaff;
+  --lp-info-soft: rgba(78, 202, 255, 0.12);
+  --lp-info-border: rgba(78, 202, 255, 0.26);
+
+  /* 品牌强调 & Pro */
+  --lp-accent: #4ecaff;
+  --lp-pro: #ffc34d;
+  --lp-pro-soft: rgba(255, 195, 77, 0.12);
+  --lp-pro-border: rgba(255, 195, 77, 0.26);
+
+  /* 间距阶梯 */
+  --lp-space-1: 2px;
+  --lp-space-2: 4px;
+  --lp-space-3: 6px;
+  --lp-space-4: 8px;
+  --lp-space-5: 10px;
+  --lp-space-6: 12px;
+  --lp-space-7: 16px;
+  --lp-space-8: 20px;
+
+  /* 圆角 */
+  --lp-radius-sm: 6px;
+  --lp-radius-control: 7px;
+  --lp-radius-md: 8px;
+  --lp-radius-lg: 12px;
+  --lp-radius-panel: 18px;
+  --lp-radius-pill: 999px;
+
+  /* 字号阶梯 */
+  --lp-font-2xs: 9px;
+  --lp-font-xs: 10px;
+  --lp-font-sm: 11px;
+  --lp-font-base: 12px;
+  --lp-font-md: 13px;
+  --lp-font-lg: 14px;
+  --lp-font-xl: 16px;
+  --lp-font-2xl: 20px;
+  --lp-font-display: 28px;
+
+  /* 字重 */
+  --lp-weight-normal: 400;
+  --lp-weight-medium: 560;
+  --lp-weight-semibold: 680;
+  --lp-weight-bold: 820;
+
+  /* 阴影 */
+  --lp-shadow-popover: 0 2px 12px rgba(0, 0, 0, 0.24), 0 18px 44px -16px rgba(0, 0, 0, 0.56);
+  --lp-shadow-float: 0 20px 48px rgba(0, 0, 0, 0.34);
+  --lp-shadow-card: 0 4px 14px rgba(0, 0, 0, 0.18);
+  --lp-inset-stroke: inset 0 0 0 0.5px rgba(255, 255, 255, 0.10);
+
+  /* 状态光晕 */
+  --lp-glow-ok: 0 0 20px rgba(76, 212, 160, 0.30);
+  --lp-glow-work: 0 0 20px rgba(255, 154, 60, 0.30);
+  --lp-glow-warning: 0 0 20px rgba(255, 184, 77, 0.30);
+  --lp-glow-critical: 0 0 20px rgba(255, 92, 122, 0.30);
+  --lp-glow-info: 0 0 20px rgba(78, 202, 255, 0.30);
+
+  /* 动效曲线与时长 */
+  --lp-ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --lp-ease-pop: cubic-bezier(0.2, 0.98, 0.18, 1);
+  --lp-dur-fast: 0.13s;
+  --lp-dur-base: 0.22s;
+  --lp-dur-panel: 0.46s;
+
+  /* ---- 旧 --obs-* 别名层：指向新 token，保证零回归。组件迁移完后删除 ---- */
+  --obs-surface-page: var(--lp-bg-app);
+  --obs-surface-panel-top: var(--lp-bg-panel-top);
+  --obs-surface-panel-bottom: var(--lp-bg-panel-bottom);
+  --obs-surface-card: var(--lp-surface-3);
+  --obs-surface-card-soft: var(--lp-surface-1);
+  --obs-surface-card-muted: var(--lp-surface-2);
+  --obs-surface-hover: var(--lp-surface-hover);
+  --obs-surface-pressed: var(--lp-surface-pressed);
+  --obs-surface-sunken: var(--lp-surface-sunken);
+  --obs-surface-sunken-strong: var(--lp-surface-sunken);
+  --obs-border-soft: var(--lp-border-subtle);
+  --obs-border-muted: var(--lp-border-default);
+  --obs-border-strong: var(--lp-border-strong);
+  --obs-text-solid: var(--lp-text-strong);
+  --obs-text-primary: var(--lp-text-primary);
+  --obs-text-strong: var(--lp-text-primary);
+  --obs-text-secondary: var(--lp-text-secondary);
+  --obs-text-muted: var(--lp-text-muted);
+  --obs-text-faint: var(--lp-text-faint);
+  --obs-status-ok: var(--lp-ok);
+  --obs-status-work: var(--lp-work);
+  --obs-status-warning: var(--lp-warning);
+  --obs-status-critical: var(--lp-critical);
+  --obs-status-info: var(--lp-info);
+  --obs-status-info-soft: var(--lp-info-soft);
+  --obs-status-info-border: var(--lp-info-border);
+  --obs-status-warning-soft: var(--lp-warning-soft);
+  --obs-status-warning-border: var(--lp-warning-border);
+  --obs-status-critical-soft: var(--lp-critical-soft);
+  --obs-status-critical-border: var(--lp-critical-border);
+  --obs-panel-radius: var(--lp-radius-panel);
+  --obs-card-radius: var(--lp-radius-md);
+  --obs-control-radius: var(--lp-radius-control);
+  --obs-pill-radius: var(--lp-radius-pill);
+  --obs-panel-padding-x: 14px;
+  --obs-panel-shadow: var(--lp-shadow-popover);
+  --obs-panel-inset: inset 0 0 0 0.5px rgba(255, 255, 255, 0.16);
+  --obs-ease-soft: var(--lp-ease-soft);
+  --obs-ease-pop: var(--lp-ease-pop);
+  --obs-duration-panel: var(--lp-dur-panel);
+  --obs-duration-fast: var(--lp-dur-fast);
+}
