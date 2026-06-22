@@ -10,6 +10,7 @@
     sendNotification
   } from "@tauri-apps/plugin-notification";
   import { onMount } from "svelte";
+  import { STATUS, statusColor, riskColor } from "./tokens";
 
   interface AgentSession {
     agent_type: string;
@@ -1608,22 +1609,6 @@
     }
   }
 
-  function statusColor(s: string): string {
-    switch (s) {
-      case "busy":
-      case "thinking": return "#FFB84D";
-      case "executing": return "#FF9A3C";
-      case "waiting_approval": return "#FFB84D";
-      case "waiting":
-      case "idle": return "#4CD4A0";
-      case "rate_limited": return "#EF4444";
-      case "error": return "#EF4444";
-      case "stalled": return "#EF4444";
-      case "done": return "rgba(255,255,255,0.28)";
-      default: return "rgba(255,255,255,0.28)";
-    }
-  }
-
   function statusLabel(s: string): string {
     switch (s) {
       case "busy": return "运行中";
@@ -1769,9 +1754,9 @@
 
   function permissionLevelColor(level: string): string {
     switch (level) {
-      case "high": return "#FFB84D";
-      case "medium": return "#4ECAFF";
-      case "low": return "#4CD4A0";
+      case "high": return STATUS.warning;
+      case "medium": return STATUS.info;
+      case "low": return STATUS.ok;
       default: return "rgba(255,255,255,0.42)";
     }
   }
@@ -1859,15 +1844,6 @@
     const slice = (values ?? []).slice(-limit);
     const max = Math.max(1, ...slice);
     return slice.map((value) => Math.max(8, Math.round((value / max) * 100)));
-  }
-
-  function riskColor(level: string): string {
-    switch (level) {
-      case "critical": return "#FF5C7A";
-      case "warning": return "#FFB84D";
-      case "info": return "#4ECAFF";
-      default: return "#4CD4A0";
-    }
   }
 
   function eventColor(severity: SessionEvent["severity"]): string {
@@ -2636,12 +2612,12 @@
   let primaryAlert = $derived(dashboardRisks[0] ?? null);
 
   function overallStatus(): { label: string; color: string } {
-    if (totalCount === 0) return { label: "未发现会话", color: "rgba(255,255,255,0.35)" };
-    if (criticalCount > 0) return { label: "需要处理", color: "#FF5C7A" };
-    if (approvalCount > 0) return { label: "待确认", color: "#FFB84D" };
-    if (activeCount > 0) return { label: "工作中", color: "#FF9A3C" };
-    if (warningCount > 0) return { label: "需查看", color: "#FFB84D" };
-    return { label: "待命", color: "#4CD4A0" };
+    if (totalCount === 0) return { label: "未发现会话", color: STATUS.neutral };
+    if (criticalCount > 0) return { label: "需要处理", color: STATUS.critical };
+    if (approvalCount > 0) return { label: "待确认", color: STATUS.warning };
+    if (activeCount > 0) return { label: "工作中", color: STATUS.work };
+    if (warningCount > 0) return { label: "需查看", color: STATUS.warning };
+    return { label: "待命", color: STATUS.ok };
   }
 
   function overviewTargetLine(): string {
@@ -2962,7 +2938,7 @@
         </div>
         <div class="dash-kpi">
           <span>需查看</span>
-          <strong style="color:{warningCount ? '#FFB84D' : '#4CD4A0'}">{warningCount}</strong>
+          <strong style="color:{warningCount ? STATUS.warning : STATUS.ok}">{warningCount}</strong>
           <em>{sessions.filter((s) => s.risk_level === "critical").length} 个需要立即看</em>
         </div>
         <div class="dash-kpi">
@@ -4109,47 +4085,161 @@
   :global(*) { box-sizing: border-box; }
 
   :global(:root) {
-    --obs-surface-page: #1b1d22;
-    --obs-surface-panel-top: rgba(34, 41, 47, 0.985);
-    --obs-surface-panel-bottom: rgba(14, 18, 22, 0.99);
-    --obs-surface-card: rgba(255, 255, 255, 0.105);
-    --obs-surface-card-soft: rgba(255, 255, 255, 0.082);
-    --obs-surface-card-muted: rgba(255, 255, 255, 0.095);
-    --obs-surface-hover: rgba(255, 255, 255, 0.14);
-    --obs-surface-pressed: rgba(255, 255, 255, 0.17);
-    --obs-surface-sunken: rgba(0, 0, 0, 0.15);
-    --obs-surface-sunken-strong: rgba(0, 0, 0, 0.18);
-    --obs-border-soft: rgba(255, 255, 255, 0.08);
-    --obs-border-muted: rgba(255, 255, 255, 0.10);
-    --obs-border-strong: rgba(255, 255, 255, 0.16);
-    --obs-text-solid: #ffffff;
-    --obs-text-primary: rgba(255, 255, 255, 0.92);
-    --obs-text-strong: rgba(255, 255, 255, 0.86);
-    --obs-text-secondary: rgba(255, 255, 255, 0.58);
-    --obs-text-muted: rgba(255, 255, 255, 0.38);
-    --obs-text-faint: rgba(255, 255, 255, 0.32);
-    --obs-status-ok: #4CD4A0;
-    --obs-status-work: #FF9A3C;
-    --obs-status-warning: #FFB84D;
-    --obs-status-critical: #FF5C7A;
-    --obs-status-info: #4ECAFF;
-    --obs-status-info-soft: rgba(78, 202, 255, 0.13);
-    --obs-status-info-border: rgba(78, 202, 255, 0.28);
-    --obs-status-warning-soft: rgba(255, 184, 77, 0.12);
-    --obs-status-warning-border: rgba(255, 184, 77, 0.24);
-    --obs-status-critical-soft: rgba(255, 92, 122, 0.12);
-    --obs-status-critical-border: rgba(255, 92, 122, 0.28);
-    --obs-panel-radius: 18px;
-    --obs-card-radius: 8px;
-    --obs-control-radius: 7px;
-    --obs-pill-radius: 999px;
+    /* ============================================================
+       LoopPulse Design Tokens (--lp-*)
+       规范来源：docs/design/DESIGN_SYSTEM.md（v1，2026-06-22 确认）
+       阶段 1：token 落地。旧 --obs-* 作为别名指向新 token，平滑迁移。
+       ============================================================ */
+
+    /* 背景层（不透明基底） */
+    --lp-bg-app: #16181c;
+    --lp-bg-panel-top: rgba(34, 40, 47, 0.985);
+    --lp-bg-panel-bottom: rgba(13, 17, 21, 0.99);
+    --lp-bg-sidebar: rgba(8, 11, 15, 0.55);
+    --lp-bg-float: rgba(20, 24, 30, 0.96);
+
+    /* Surface（半透明叠加面） */
+    --lp-surface-1: rgba(255, 255, 255, 0.05);
+    --lp-surface-2: rgba(255, 255, 255, 0.08);
+    --lp-surface-3: rgba(255, 255, 255, 0.11);
+    --lp-surface-hover: rgba(255, 255, 255, 0.14);
+    --lp-surface-pressed: rgba(255, 255, 255, 0.18);
+    --lp-surface-sunken: rgba(0, 0, 0, 0.16);
+
+    /* 边框 */
+    --lp-border-subtle: rgba(255, 255, 255, 0.08);
+    --lp-border-default: rgba(255, 255, 255, 0.12);
+    --lp-border-strong: rgba(255, 255, 255, 0.18);
+
+    /* 文本（统一为暗底纯白透明） */
+    --lp-text-strong: #ffffff;
+    --lp-text-primary: rgba(255, 255, 255, 0.92);
+    --lp-text-secondary: rgba(255, 255, 255, 0.60);
+    --lp-text-muted: rgba(255, 255, 255, 0.40);
+    --lp-text-faint: rgba(255, 255, 255, 0.28);
+
+    /* 状态 / 风险语义色（基色 + soft + border 三件套） */
+    --lp-ok: #4cd4a0;
+    --lp-ok-soft: rgba(76, 212, 160, 0.12);
+    --lp-ok-border: rgba(76, 212, 160, 0.26);
+    --lp-work: #ff9a3c;
+    --lp-work-soft: rgba(255, 154, 60, 0.12);
+    --lp-work-border: rgba(255, 154, 60, 0.26);
+    --lp-warning: #ffb84d;
+    --lp-warning-soft: rgba(255, 184, 77, 0.12);
+    --lp-warning-border: rgba(255, 184, 77, 0.26);
+    --lp-critical: #ff5c7a;
+    --lp-critical-soft: rgba(255, 92, 122, 0.12);
+    --lp-critical-border: rgba(255, 92, 122, 0.26);
+    --lp-info: #4ecaff;
+    --lp-info-soft: rgba(78, 202, 255, 0.12);
+    --lp-info-border: rgba(78, 202, 255, 0.26);
+
+    /* 品牌强调 & Pro */
+    --lp-accent: #4ecaff;
+    --lp-pro: #ffc34d;
+    --lp-pro-soft: rgba(255, 195, 77, 0.12);
+    --lp-pro-border: rgba(255, 195, 77, 0.26);
+
+    /* 间距阶梯 */
+    --lp-space-1: 2px;
+    --lp-space-2: 4px;
+    --lp-space-3: 6px;
+    --lp-space-4: 8px;
+    --lp-space-5: 10px;
+    --lp-space-6: 12px;
+    --lp-space-7: 16px;
+    --lp-space-8: 20px;
+
+    /* 圆角 */
+    --lp-radius-sm: 6px;
+    --lp-radius-control: 7px;
+    --lp-radius-md: 8px;
+    --lp-radius-lg: 12px;
+    --lp-radius-panel: 18px;
+    --lp-radius-pill: 999px;
+
+    /* 字号阶梯 */
+    --lp-font-2xs: 9px;
+    --lp-font-xs: 10px;
+    --lp-font-sm: 11px;
+    --lp-font-base: 12px;
+    --lp-font-md: 13px;
+    --lp-font-lg: 14px;
+    --lp-font-xl: 16px;
+    --lp-font-2xl: 20px;
+    --lp-font-display: 28px;
+
+    /* 字重 */
+    --lp-weight-normal: 400;
+    --lp-weight-medium: 560;
+    --lp-weight-semibold: 680;
+    --lp-weight-bold: 820;
+
+    /* 阴影 */
+    --lp-shadow-popover: 0 2px 12px rgba(0, 0, 0, 0.24), 0 18px 44px -16px rgba(0, 0, 0, 0.56);
+    --lp-shadow-float: 0 20px 48px rgba(0, 0, 0, 0.34);
+    --lp-shadow-card: 0 4px 14px rgba(0, 0, 0, 0.18);
+    --lp-inset-stroke: inset 0 0 0 0.5px rgba(255, 255, 255, 0.10);
+
+    /* 状态光晕 */
+    --lp-glow-ok: 0 0 20px rgba(76, 212, 160, 0.30);
+    --lp-glow-work: 0 0 20px rgba(255, 154, 60, 0.30);
+    --lp-glow-warning: 0 0 20px rgba(255, 184, 77, 0.30);
+    --lp-glow-critical: 0 0 20px rgba(255, 92, 122, 0.30);
+    --lp-glow-info: 0 0 20px rgba(78, 202, 255, 0.30);
+
+    /* 动效曲线与时长 */
+    --lp-ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+    --lp-ease-pop: cubic-bezier(0.2, 0.98, 0.18, 1);
+    --lp-dur-fast: 0.13s;
+    --lp-dur-base: 0.22s;
+    --lp-dur-panel: 0.46s;
+
+    /* ---- 旧 --obs-* 别名层：指向新 token，保证阶段 1 零回归 ----
+       注：部分旧值与新阶梯有极小差异（如 0.985 渐变、0.082 卡片），
+       已对齐到最接近的新 token；视觉差异不可见。组件拆分阶段逐步替换使用处后删除本层。 */
+    --obs-surface-page: var(--lp-bg-app);
+    --obs-surface-panel-top: var(--lp-bg-panel-top);
+    --obs-surface-panel-bottom: var(--lp-bg-panel-bottom);
+    --obs-surface-card: var(--lp-surface-3);
+    --obs-surface-card-soft: var(--lp-surface-1);
+    --obs-surface-card-muted: var(--lp-surface-2);
+    --obs-surface-hover: var(--lp-surface-hover);
+    --obs-surface-pressed: var(--lp-surface-pressed);
+    --obs-surface-sunken: var(--lp-surface-sunken);
+    --obs-surface-sunken-strong: var(--lp-surface-sunken);
+    --obs-border-soft: var(--lp-border-subtle);
+    --obs-border-muted: var(--lp-border-default);
+    --obs-border-strong: var(--lp-border-strong);
+    --obs-text-solid: var(--lp-text-strong);
+    --obs-text-primary: var(--lp-text-primary);
+    --obs-text-strong: var(--lp-text-primary);
+    --obs-text-secondary: var(--lp-text-secondary);
+    --obs-text-muted: var(--lp-text-muted);
+    --obs-text-faint: var(--lp-text-faint);
+    --obs-status-ok: var(--lp-ok);
+    --obs-status-work: var(--lp-work);
+    --obs-status-warning: var(--lp-warning);
+    --obs-status-critical: var(--lp-critical);
+    --obs-status-info: var(--lp-info);
+    --obs-status-info-soft: var(--lp-info-soft);
+    --obs-status-info-border: var(--lp-info-border);
+    --obs-status-warning-soft: var(--lp-warning-soft);
+    --obs-status-warning-border: var(--lp-warning-border);
+    --obs-status-critical-soft: var(--lp-critical-soft);
+    --obs-status-critical-border: var(--lp-critical-border);
+    --obs-panel-radius: var(--lp-radius-panel);
+    --obs-card-radius: var(--lp-radius-md);
+    --obs-control-radius: var(--lp-radius-control);
+    --obs-pill-radius: var(--lp-radius-pill);
     --obs-panel-padding-x: 14px;
-    --obs-panel-shadow: 0 2px 12px rgba(0, 0, 0, 0.24), 0 18px 44px -16px rgba(0, 0, 0, 0.56);
+    --obs-panel-shadow: var(--lp-shadow-popover);
     --obs-panel-inset: inset 0 0 0 0.5px rgba(255, 255, 255, 0.16);
-    --obs-ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
-    --obs-ease-pop: cubic-bezier(0.2, 0.98, 0.18, 1);
-    --obs-duration-panel: 0.48s;
-    --obs-duration-fast: 0.13s;
+    --obs-ease-soft: var(--lp-ease-soft);
+    --obs-ease-pop: var(--lp-ease-pop);
+    --obs-duration-panel: var(--lp-dur-panel);
+    --obs-duration-fast: var(--lp-dur-fast);
   }
 
   :global(html), :global(body), :global(#app) {
@@ -4772,7 +4862,7 @@
   .pro-gate {
     width: min(720px, 100%);
     border-radius: 12px;
-    border: 1px solid rgba(82, 202, 255, 0.18);
+    border: 1px solid rgba(78, 202, 255, 0.18);
     background: rgba(255, 255, 255, 0.055);
     padding: 34px;
     box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
@@ -4781,7 +4871,7 @@
   .pro-gate > span {
     display: block;
     margin-top: 16px;
-    color: #52caff;
+    color: var(--lp-accent);
     font-size: 12px;
     font-weight: 700;
   }
@@ -4835,8 +4925,8 @@
     height: 38px;
     margin-top: 24px;
     border-radius: 8px;
-    border: 1px solid rgba(82, 202, 255, 0.34);
-    background: rgba(82, 202, 255, 0.16);
+    border: 1px solid rgba(78, 202, 255, 0.34);
+    background: rgba(78, 202, 255, 0.16);
     color: #eef3f7;
     font: inherit;
     font-size: 13px;
@@ -4870,8 +4960,8 @@
     align-items: center;
     justify-content: center;
     background: #1b2730;
-    border: 1px solid rgba(82, 202, 255, 0.22);
-    color: #52caff;
+    border: 1px solid rgba(78, 202, 255, 0.22);
+    color: var(--lp-accent);
     font-weight: 800;
     font-size: 15px;
   }
@@ -4969,8 +5059,8 @@
   .dash-filter-list button.active,
   .dash-filter-list button:hover {
     color: #eef3f7;
-    background: rgba(82, 202, 255, 0.10);
-    border-color: rgba(82, 202, 255, 0.20);
+    background: rgba(78, 202, 255, 0.10);
+    border-color: rgba(78, 202, 255, 0.20);
   }
 
   .dash-filter-list em {
@@ -5022,7 +5112,7 @@
     height: 2px;
     margin-top: 7px;
     border-radius: 99px;
-    background: linear-gradient(90deg, #52caff, #ffb84d);
+    background: linear-gradient(90deg, var(--lp-accent), #ffb84d);
   }
 
   .dashboard-main {
@@ -5083,14 +5173,14 @@
   }
 
   .dash-sort button.active {
-    background: rgba(82, 202, 255, 0.16);
+    background: rgba(78, 202, 255, 0.16);
     color: #eef3f7;
   }
 
   .dash-refresh {
     height: 32px;
-    border: 1px solid rgba(82, 202, 255, 0.22);
-    background: rgba(82, 202, 255, 0.10);
+    border: 1px solid rgba(78, 202, 255, 0.22);
+    background: rgba(78, 202, 255, 0.10);
     color: #eef3f7;
   }
 
@@ -5172,7 +5262,7 @@
 
   .session-row:hover,
   .session-row.active {
-    background: rgba(82, 202, 255, 0.070);
+    background: rgba(78, 202, 255, 0.070);
   }
 
   .session-row.risk-critical {
@@ -5212,7 +5302,7 @@
   .session-cell-main span {
     margin-top: 4px;
     font-size: 10px;
-    color: #52caff;
+    color: var(--lp-accent);
     font-family: "SF Mono", "Menlo", "Monaco", monospace;
   }
 
@@ -5301,7 +5391,7 @@
   }
 
   .inspector-tabs button.active {
-    background: rgba(82, 202, 255, 0.15);
+    background: rgba(78, 202, 255, 0.15);
     color: #eef3f7;
   }
 
@@ -5448,7 +5538,7 @@
 
   .conversation-card span {
     margin-top: 5px;
-    color: #52caff;
+    color: var(--lp-accent);
     font-size: 10.5px;
   }
 
@@ -5585,7 +5675,7 @@
   }
 
   .inspector-actions button:hover {
-    background: rgba(82, 202, 255, 0.12);
+    background: rgba(78, 202, 255, 0.12);
     color: #eef3f7;
   }
 
@@ -5704,8 +5794,8 @@
   }
 
   .timeline-item:hover {
-    background: rgba(82, 202, 255, 0.08);
-    border-color: rgba(82, 202, 255, 0.18);
+    background: rgba(78, 202, 255, 0.08);
+    border-color: rgba(78, 202, 255, 0.18);
   }
 
   .timeline-item i {
@@ -7565,7 +7655,7 @@
   .settings-grid input {
     width: 11px;
     height: 11px;
-    accent-color: #4CD4A0;
+    accent-color: var(--lp-ok);
   }
 
   .pro-setting {
@@ -8046,5 +8136,15 @@
     color: rgba(255, 242, 216, 0.86);
     border-color: rgba(255, 195, 77, 0.28);
     background: rgba(255, 195, 77, 0.10);
+  }
+
+  /* 可访问性：尊重系统“减弱动态效果”。关闭呼吸/滑入/位移类动画，
+     仅保留即时状态，避免对该偏好用户造成不适。规范见 docs/design/DESIGN_SYSTEM.md §7.2。 */
+  @media (prefers-reduced-motion: reduce) {
+    :global(*) {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
   }
 </style>

@@ -6,7 +6,43 @@
 
 ---
 
+## 2026-06-22 设计系统重构 · 阶段 0+1（by Claude / Ducc）
+
+**背景**：前端将进入「设计优化 + 架构（拆 8000 行单文件）」两轮重构，最终打包内测。
+先做设计系统收口，避免在碎片化样式上反复返工。盘点结果：颜色字面量 216 个唯一值、
+三套“白”、红色(#EF4444 vs #FF5C7A)/青色(#4ECAFF vs #52CAFF)/暖色分叉、半像素字号、魔法间距。
+
+**阶段 0（设计规范，已评审确认）**：
+- 新增 `docs/design/DESIGN_SYSTEM.md`：定义 `--lp-*` 语义 token（颜色/间距/圆角/字号/字重/
+  阴影/光晕/动效）、动效规范、图标规范、布局密度基线、落地顺序。
+- 用户确认 7 个决策点：①保留 panel 渐变玻璃 ②dashboard 文本统一纯白透明 ③红统一 #FF5C7A
+  ④青统一 #4ECAFF ⑤品牌色沿用青蓝 ⑥品牌 mark 改 **LoopPulse 字母/符号 mark**（弃「观」，
+  阶段 3 落地）⑦前缀 --obs- → --lp-（别名平滑迁移）。
+
+**阶段 1（token 落地，纯等价替换，本次完成）**：
+- `App.svelte` `:root`：写入全套 `--lp-*` token；旧 `--obs-*` 改为 `var(--lp-*)` 别名，
+  保证现有使用处零回归（视觉不变）。极小差异（如 0.985 渐变、0.082 卡片）已对齐到最近新档，肉眼不可见。
+- 新增 `src/tokens.ts`：JS 侧单一来源。`statusColor` / `riskColor` 从 App.svelte 移出并消除
+  硬编码分叉——红色统一 critical(#FF5C7A，弃 #EF4444)。App.svelte 改为 `import { STATUS, statusColor, riskColor } from "./tokens"`。
+- CSS 内 `#52caff` → `var(--lp-accent)`、`rgba(82,202,255,*)` → `rgba(78,202,255,*)`，青色归一。
+- 其余 TS 内联硬编码状态色（overallStatus / KPI / permissionLevelColor）改用 `STATUS.*`。
+- 新增 `@media (prefers-reduced-motion: reduce)` 全局降级动画（此前完全缺失，影响开启“减弱动态效果”的内测用户）。
+
+**未动**：现有 markup 结构、布局、`--pop-delay` 内联（留待阶段 2 组件化）、品牌「观」字（阶段 3）。
+panel 432×414 与窗口透明留白 padding 不动（NSPanel 对齐踩坑，见 PROGRESS.md）。
+
+**给 Codex 的接力提示**：
+- 阶段 2 拆组件时，使用处逐步从 `--obs-*` 换成 `--lp-*`，全部替换完再删 `:root` 里的 --obs 别名层。
+- 拆分优先级见 DESIGN_SYSTEM.md §10：tokens.css → Onboarding/Dashboard/Panel/SettingsPanel
+  → 共享小组件（StatusDot/SignalGrid/Meter/RiskRow/SegmentedControl/SwitchRow/Badge）。
+- 仍有大量 surface/border 用 `rgba(255,255,255,*)` 散值未收（盘点的 ~50 档），阶段 2 拆到具体组件时就近吸附到 --lp-surface-*/border-*。
+
+**验证**：`pnpm build`、`npx tsc --noEmit`（clean）、`cargo build`（0 警告 0 错误）通过。
+
+---
+
 ## 2026-06-22 全局诊断后的一轮修复（by Claude / Ducc）
+
 
 本轮针对一次全局代码诊断，修复了若干“PRD 承诺但代码未实现 / 实现错误 / 误报 / 性能”问题。
 总体验证：`cargo fmt --check`、`cargo test --lib`（77 passed）、`pnpm build` 均通过，无编译警告。
