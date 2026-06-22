@@ -6,6 +6,46 @@
 
 ---
 
+## 2026-06-22 项目名采集根治 + 卡片状态色一致性（by Claude / Ducc）
+
+### 1. Claude 项目名「观察者」被显示成「Maker」——根治
+
+**现象**：真实 cwd `/Users/changzhichao_work/Documents/AI-Maker/观察者` 被显示成「Maker」。
+此 bug 反复修过多次仍复现。
+
+**根因（两层）**：
+- Claude project 目录名是**不可逆编码**：本项目目录名为 `-Users-changzhichao-work-Documents-AI-Maker----`，
+  中文「观察者」被折成尾部 `----`，根本没存进目录名。
+- `claude.rs::parse_transcript` **优先**用目录名反解（`decode_project_path` 把所有 `-` 当 `/`）作为 cwd，
+  只在 cwd 为空时才读 transcript 行里的真实 `cwd`。而目录名几乎总是非空，导致：
+  `AI-Maker`→`AI/Maker`、中文段丢失 → 解出 `/Users/.../AI/Maker////` → 末段「Maker」。
+  transcript 里其实**有正确 cwd**，却被跳过。
+
+**根治（倒置优先级）**：
+- `cwd` 从空起步，遍历 transcript 时取**第一个**出现的 `cwd` 字段（避免后续漂移到 skill/子目录）；
+- 循环结束仍为空才回退到 `decoded_cwd_fallback`（目录名 decode，标注为不可靠 best-effort）。
+- 含连字符（AI-Maker / PPT-Maker）与中文目录名均可正确显示。
+- 附带修复：cwd 正确后，`pid_for_cwd` / `git_info_for_cwd` / 聚焦窗口 / `file_inside_project` 都跟着准了。
+- 测试：`prefers_transcript_cwd_over_lossy_dir_decode`（中文+连字符场景）、
+  `falls_back_to_dir_decode_when_no_cwd_field`（无 cwd 字段回退）。
+- Codex/OpenCode 本就优先读结构化 cwd 字段，无此问题。
+
+### 2. 卡片「工作中」标签显示为绿色——语义一致性修复
+
+**现象**：顶部大「工作中」是橙色，但会话卡片右侧的「工作中」文字是绿色。
+
+**根因**：`App.svelte` 卡片 `.compact-risk` 标签文字用 `livenessLabel`（按存活语义），
+颜色却用 `riskColor(risk_level)`（按风险等级）。无风险的执行中会话 → risk=ok → 绿色，与文字矛盾。
+
+**修复**：新增 `livenessColor()`，标签颜色跟随 liveness 语义（工作中→work 橙 / 待命→ok 绿 /
+需查看·待确认→warning 黄 / 异常·限流→critical 红）。有真实风险时仍显示风险标题 + 风险色。
+现与顶部统计、左侧状态点 (`signalColorForSession`) 完全一致。
+
+**验证**：`cargo test --lib`（79 passed）、`cargo fmt --check`、`pnpm build`、`tsc --noEmit` 通过；
+debug 包重启后用户确认项目名显示「观察者」、「工作中」为橙色。
+
+---
+
 ## 2026-06-22 设计系统重构 · 阶段 0+1（by Claude / Ducc）
 
 **背景**：前端将进入「设计优化 + 架构（拆 8000 行单文件）」两轮重构，最终打包内测。

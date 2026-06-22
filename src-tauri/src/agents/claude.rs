@@ -130,7 +130,13 @@ fn parse_transcript(
     processes: &HashMap<u32, ProcessInfo>,
 ) -> Option<AgentSession> {
     let content = fs::read_to_string(path).ok()?;
-    let transcript_cwd = path
+    // 从 ~/.claude/projects/<编码目录名> 反解出的路径，仅作“兜底”。
+    // 注意：该编码不可逆——`-` 既是路径分隔符又可能是目录名里的连字符（如 AI-Maker），
+    // 且中文目录段会被折成 `----`（如「观察者」），因此 decode 结果常常是错的
+    // （例如还原成 .../AI/Maker////，取末段得到 "Maker"）。
+    // 真实 cwd 必须优先取 transcript jsonl 行里的 `cwd` 字段，见下方循环。
+    // 详见 DEV_NOTES.md「2026-06-22 项目名采集根治」。
+    let decoded_cwd_fallback = path
         .parent()
         .and_then(|parent| parent.file_name())
         .map(|name| decode_project_path(name.to_string_lossy().as_ref()))
@@ -153,7 +159,9 @@ fn parse_transcript(
     }
 
     let mut session_id = path.file_stem()?.to_string_lossy().to_string();
-    let mut cwd = transcript_cwd;
+    // cwd 留空起步：优先采用 transcript 行里的真实 cwd（取第一个出现的，避免后续漂移到
+    // skill / 子目录）。循环结束后若仍为空，再回退到 decoded_cwd_fallback。
+    let mut cwd = String::new();
     let mut model = None;
     let mut started_at = file_modified_at;
     let mut input_tokens = 0_u64;
@@ -353,6 +361,10 @@ fn parse_transcript(
         }
     }
 
+    // transcript 完全没有 cwd 字段时，才回退到不可靠的目录名 decode（best-effort）。
+    if cwd.is_empty() {
+        cwd = decoded_cwd_fallback.clone();
+    }
     if cwd.is_empty() {
         cwd = decode_project_path(path.parent()?.file_name()?.to_string_lossy().as_ref());
     }
@@ -872,6 +884,48 @@ mod tests {
             session.conversation_summary.last_user_hint.as_deref(),
             Some("build it")
         );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn prefers_transcript_cwd_over_lossy_dir_decode() {
+        // 复刻「观察者」被显示成「Maker」的真实场景：
+        // Claude project 目录名 `-Users-test-Documents-AI-Maker----`（中文段被折成 ----，
+        // 连字符 AI-Maker 不可逆），decode 会得到 .../AI/Maker////，末段是 "Maker"。
+        // transcript 行里有正确 cwd，必须优先采用。
+        let dir = unique_temp_dir("claude-cn-path");
+        let project_dir = dir.join("-Users-test-Documents-AI-Maker----");
+        fs::create_dir_all(&project_dir).unwrap();
+        let transcript = project_dir.join("session-cn.jsonl");
+        let content = r#"{"sessionId":"cn-1","cwd":"/Users/test/Documents/AI-Maker/观察者","timestamp":"__T0__","type":"user","message":{"content":"hi"}}
+{"sessionId":"cn-1","cwd":"/Users/test/Documents/AI-Maker/观察者","timestamp":"__T1__","type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"ok"}]}}"#
+            .replace("__T0__", &test_timestamp(-2))
+            .replace("__T1__", &test_timestamp(0));
+        fs::write(&transcript, content).unwrap();
+
+        let session = parse_transcript(&transcript, false, &[], &HashMap::new()).unwrap();
+
+        assert_eq!(session.cwd, "/Users/test/Documents/AI-Maker/观察者");
+        assert_eq!(session.project_name, "观察者");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn falls_back_to_dir_decode_when_no_cwd_field() {
+        // transcript 没有 cwd 字段时，才回退到目录名 decode（best-effort）。
+        let dir = unique_temp_dir("claude-no-cwd");
+        fs::create_dir_all(dir.join("-Users-test-project")).unwrap();
+        let transcript = dir.join("-Users-test-project").join("session-nocwd.jsonl");
+        let content = r#"{"sessionId":"nocwd-1","timestamp":"__T0__","type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"ok"}]}}"#
+            .replace("__T0__", &test_timestamp(0));
+        fs::write(&transcript, content).unwrap();
+
+        let session = parse_transcript(&transcript, false, &[], &HashMap::new()).unwrap();
+
+        assert_eq!(session.cwd, "/Users/test/project");
+        assert_eq!(session.project_name, "project");
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -1932,6 +1932,21 @@
     return statusLabel(session.status);
   }
 
+  // liveness 标签的颜色必须与 livenessLabel 的语义一致：
+  // 「工作中」=work 橙、「待命」=ok 绿、「需查看/待确认」=warning 黄、「异常/限流」=critical 红。
+  // 此前卡片标签文字用 livenessLabel 但颜色取 riskColor(risk_level)，导致
+  // 无风险的执行中会话显示“工作中(绿)”，与顶部统计(橙)和左侧状态点(橙)矛盾。
+  function livenessColor(session: AgentSession): string {
+    if (session.risk_level === "critical" || ["error", "rate_limited", "stalled"].includes(session.status)) {
+      return STATUS.critical;
+    }
+    if (session.status === "waiting_approval") return STATUS.warning;
+    if (wasActive(session.status)) return STATUS.work;
+    if (session.risk_level === "warning") return STATUS.warning;
+    if (["waiting", "idle"].includes(session.status)) return STATUS.ok;
+    return STATUS.neutral;
+  }
+
   function pulseToneForSession(session: AgentSession): "ok" | "work" | "warning" | "critical" | "idle" {
     if (session.risk_level === "critical" || ["error", "rate_limited", "stalled"].includes(session.status)) return "critical";
     if (session.status === "waiting_approval") return "warning";
@@ -3563,7 +3578,7 @@
               <span>{formatClock(session.last_activity_at)}</span>
               <span>{permissionCompactLabel(session)}</span>
             </div>
-            <div class="compact-risk" style="color:{riskColor(session.risk_level)}">
+            <div class="compact-risk" style="color:{session.risks.length > 0 ? riskColor(session.risk_level) : livenessColor(session)}">
               {#if session.risks.length > 0}
                 {session.risks[0].title}
               {:else}
