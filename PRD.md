@@ -5,6 +5,9 @@
 状态：待评审  
 参考：abtop v0.4.7、CleanMyMac 菜单栏面板体验  
 
+> 修订记录：2026-06-22 更新「Alert Types」一节——context 使用率改为仅展示/软提示（不告警），
+> 周期限额预警改为可配置两档 + per-session 风险。详见 DEV_NOTES.md「2026-06-22 全局诊断后的一轮修复」。
+
 ## 1. Executive Summary
 
 ### Problem Statement
@@ -191,7 +194,8 @@ Acceptance Criteria:
 ### Alert Types
 
 - 假死风险：长时间无新 transcript / 无工具调用 / CPU 低 / 子进程无活动，但状态仍显示执行中。
-- context 高水位：context 使用率超过 70%、85%、95% 三档。
+- context 使用率：**仅作展示与软提示，不触发告警/通知**。原因：开发期会话的累计 context 单调增长，按阈值报警对每个长项目都会误触发；且 Claude/Codex 会自动压缩上下文，用户对“快满了”无法采取有效行动。详情页在使用率较高时给出“接近上限、可能自动整理”的软提示。（2026-06-22 调整，原为“70/85/95 三档告警”，见 DEV_NOTES.md）
+- 周期限额预警：基于 Claude / Codex 官方 5 小时 / 7 天周期用量，做成**可配置两档**（注意档 warning / 高危档 critical，默认 75% / 90%）。每个会话可在详情页看到 `quota_pressure` 风险并附额度恢复时间；通知按额度来源去重（claude/codex 各最多一条），避免多会话同源时重复打扰。（2026-06-22 调整，原为“写死接近 90% 单档全局通知”）
 - token 异常：单位时间 token 增长超过基线，或单轮 token 激增。
 - 限流：Claude / Codex rate limit 接近或达到上限。
 - 错误报警：transcript 中出现 tool error、command failed、permission denied、panic、timeout 等错误信号。
