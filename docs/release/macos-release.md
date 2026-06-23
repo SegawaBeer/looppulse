@@ -76,6 +76,33 @@ src-tauri/target/debug/bundle/macos/LoopPulse.app
 src-tauri/target/debug/bundle/dmg/LoopPulse_0.1.0_aarch64.dmg
 ```
 
+## Unsigned Beta Distribution (current path)
+
+We do not yet have an Apple Developer account, so beta builds are **unsigned and
+un-notarized**. This is the path used to hand the app to the first testers.
+
+```bash
+pnpm build
+pnpm tauri build        # release bundle, no signing identity required
+```
+
+Outputs:
+
+```text
+src-tauri/target/release/bundle/macos/LoopPulse.app
+src-tauri/target/release/bundle/dmg/LoopPulse_0.1.0_aarch64.dmg
+```
+
+Ship the `.dmg` together with `docs/release/beta-install-guide.md` (Chinese,
+written for testers). Because the app is unsigned, Gatekeeper will block the
+first launch; the guide explains the two workarounds (right-click → Open, or
+`xattr -dr com.apple.quarantine /Applications/LoopPulse.app`).
+
+> Limitation: an unsigned app shows a security warning on every tester's machine
+> and cannot be trusted at scale. Before any public release, obtain a Developer
+> ID Application certificate (Apple Developer Program, USD 99/yr) and follow the
+> "Signed Release Build" path below.
+
 ## Signed Release Build
 
 After certificate and notarization credentials are ready:
