@@ -35,6 +35,15 @@
 - 2026-06-11 稳定点：完成 Agent 深度采集、风险/权限观察、Bevel 风格主面板优化、卡片/简表聚焦入口、CleanMyMac 风格面板开合动效和正式菜单栏图标替换；菜单栏图标改为 44x44 Retina 模板资源并关闭按钮自动缩放，提升与微信/输入法等原生状态栏图标的清晰度一致性。验证通过 `pnpm build`、`cargo fmt --check`、`cargo test`（51 passed）、`git diff --check`、`pnpm tauri build --debug`，debug app 已重启到 `/tmp/LoopPulseDebugRun/LoopPulse.app`。
 - 2026-06-11 体验收尾：统一呼吸灯/方块矩阵的告警优先颜色语义，黄色/红色告警不再显示绿色信号灯；“聚焦”增强为 TTY + 主/子进程 cwd + Terminal/iTerm 窗口/标签/session 名 + 终端内容多信号匹配；补充复杂多显示器纯函数测试，覆盖右侧、上方、下方副屏和窄可见区域定位。
 - 2026-06-22 全局诊断修复（详见 DEV_NOTES.md）：① context 不再触发告警，改为详情页软提示；② quota 周期限额预警从写死 90% 改为可配置两档（注意/高危）+ per-session 风险；③ 接线真实 Git 采集（此前恒为 None）；④ 假死 critical 结合 CPU/子进程信号消除误报；⑤ context_window_for_model 占位逻辑修正；⑥ lsof 加 cwd TTL 缓存 + 采集缓存 key 只取相关字段；⑦ 清理 NSStatusItem deprecated 警告。验证：`cargo fmt --check`、`cargo test --lib`（77 passed）、`pnpm build` 通过，无编译警告。
+- 2026-06-23 设计重构 + 内测打包里程碑（详见 DEV_NOTES.md 顶部「当前进度速览」）：
+  - 通知管理器下沉到后端（`src-tauri/src/notifications.rs`），不再依赖 panel webview。
+  - 修复 Claude 项目名「观察者」误显示为「Maker」（根治：优先 transcript cwd）；统一卡片「工作中」标签颜色。
+  - 设计系统：`docs/design/DESIGN_SYSTEM.md`（v1 确认）+ `--lp-*` token 落地（`src/styles/tokens.css`）；
+    抽出 `src/tokens.ts` / `src/lib/types.ts` / `src/lib/format.ts` / `src/lib/Onboarding.svelte`；
+    App.svelte 8141 → 6863 行。
+  - 内测版：release DMG（无签名/无公证，arm64，4.9M）+ `docs/release/beta-install-guide.md`，可分发给首批 M 系列用户。
+  - 推迟到内测反馈后：Dashboard/Panel 深拆、散值 token 收敛（约 102 处）、品牌 mark 替换、主观视觉精修。
+  - 验证：`pnpm build`、`tsc --noEmit`、`cargo test --lib`（79 passed）、DMG 挂载与 arm64 校验通过。
 
 ---
 

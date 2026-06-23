@@ -6,6 +6,45 @@
 
 ---
 
+## ⭐ 当前进度速览（2026-06-23，给接力的 Codex / Claude）
+
+**我们在哪一步**：完成「全局诊断修复 → 设计系统重构（部分） → 内测版打包」，已产出可分发的
+内测 DMG（无签名/无公证，arm64）。下一步等**首批内测用户反馈**回来，再做针对性精修。
+
+**已完成（本轮，均已 push 到 `codex/bevel-ui-refresh`）**：
+1. 诊断修复：context 告警→详情页软提示；quota 两档可配置预警 + per-session 风险；
+   接线真实 Git 采集；假死结合 CPU/子进程消除误报；context_window 占位修正；
+   lsof/缓存性能；清理 deprecated。通知管理器下沉到后端 `notifications.rs`。
+2. 两个 UI bug：Claude 项目名「观察者」误显示为「Maker」（根治：优先 transcript cwd，
+   目录名 decode 降级兜底）；卡片「工作中」标签颜色语义统一（livenessColor）。
+3. 设计系统：`docs/design/DESIGN_SYSTEM.md`（v1 已确认）；token 落地（`src/styles/tokens.css`
+   的 `--lp-*`，旧 `--obs-*` 作别名）；`src/tokens.ts`（JS 状态色单一来源）；
+   `src/lib/types.ts`（共享类型）；`src/lib/format.ts`（纯函数）；`src/lib/Onboarding.svelte`
+   （引导窗口组件化）。App.svelte 从 8141 → 6863 行。3-1 收敛了 18 处安全硬编码。
+4. 内测打包：`docs/release/beta-install-guide.md`（用户中文安装说明）+ 更新 macos-release.md；
+   release DMG 已验证（4.9M，arm64，可挂载）。
+
+**明确推迟到内测反馈后再做（不是遗漏，是有意排序）**：
+- Dashboard/Panel/SettingsPanel 组件深拆。理由：它们各引用 50+ 函数/state，纯 props 拆会更难读；
+  正确做法是建 `app-state.svelte.ts` 共享状态模块，但改动大、风险高，且对用户零可见价值。
+  等内测反馈明确哪些窗口要改，再「连拆带改」一次到位。
+- 散值 token 收敛：App.svelte `<style>` 仍有约 102 处 off-ladder 的 `rgba(255,255,255,*)` 等
+  散值未收（语义不一、不精确对齐 token，盲换有色差风险），留给反馈后那轮统一处理。
+- 品牌 mark：dashboard 里 `<div class="brand-mark">观</div>` 两处（line ~2304/2321）仍是占位
+  中文「观」。用户希望换成 LoopPulse 字母/脉冲 mark，但**本轮暂缓**（用户指示先不做）。
+- 主观视觉精修（间距/密度/动效手感）：菜单栏 NSPanel 截图会自动收起、无法实时比对，
+  应由用户对着真实 app 提具体需求后再精准调，不要盲调。
+
+**给接力者的注意事项**：
+- 验证套件：`pnpm build` + `npx tsc --noEmit` + `cd src-tauri && cargo test --lib && cargo fmt --check`。
+- 真机验收：`pnpm tauri build --debug` 后 `open .../debug/bundle/macos/LoopPulse.app`，
+  由用户点托盘图标看面板（截图不可靠，见 PROGRESS.md 踩坑）。
+- 远端仓库已迁移到 `github.com/SegawaBeer/observer`（旧 susanooo 仍自动转发）。push 偶发网络
+  失败，务必 `git ls-remote` 复核 remote==local 再认为备份成功。
+- panel 432×414 与窗口透明留白 padding 不可改（NSPanel 多屏对齐踩坑）。
+
+---
+
 ## 2026-06-22 项目名采集根治 + 卡片状态色一致性（by Claude / Ducc）
 
 ### 1. Claude 项目名「观察者」被显示成「Maker」——根治
