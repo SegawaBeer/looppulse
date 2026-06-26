@@ -22,6 +22,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use system_notification::WorkspaceListener;
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
 use tauri_nspanel::{CollectionBehavior, ManagerExt, Panel, PanelLevel, WebviewWindowExt};
+use tauri_plugin_global_shortcut::{
+    Builder as GlobalShortcutBuilder, GlobalShortcutExt, Shortcut, ShortcutState,
+};
 
 const PANEL_EDGE_MARGIN: f64 = 10.0;
 const PANEL_TOP_GAP: f64 = 12.0;
@@ -344,10 +347,38 @@ fn get_settings() -> AppSettings {
 }
 
 #[tauri::command]
-fn save_settings(settings: AppSettings) -> Result<AppSettings, String> {
+fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSettings, String> {
     let mut settings = settings::save_settings(settings)?;
     settings.launch_at_login = launch_agent::sync_launch_at_login(settings.launch_at_login)?;
-    settings::save_settings(settings)
+    let saved = settings::save_settings(settings)?;
+    apply_global_shortcut(&app, &saved.global_shortcut);
+    Ok(saved)
+}
+
+const DEFAULT_GLOBAL_SHORTCUT: &str = "Alt+Q";
+
+/// 注销已注册的全局快捷键并按 `spec` 重新注册（注册失败时回退默认值）。
+/// 复用 unregister_all + register，天然处理"换快捷键时清理旧值"，无需缓存旧 Shortcut。
+fn apply_global_shortcut(app: &tauri::AppHandle, spec: &str) {
+    let _ = app.global_shortcut().unregister_all();
+    match spec.parse::<Shortcut>() {
+        Ok(shortcut) => {
+            if let Err(error) = app.global_shortcut().register(shortcut) {
+                panel_log(&format!(
+                    "global-shortcut: register failed for {spec}: {error}"
+                ));
+                if spec != DEFAULT_GLOBAL_SHORTCUT {
+                    if let Ok(fallback) = DEFAULT_GLOBAL_SHORTCUT.parse::<Shortcut>() {
+                        let _ = app.global_shortcut().register(fallback);
+                        panel_log("global-shortcut: fell back to default Alt+Q");
+                    }
+                }
+            } else {
+                panel_log(&format!("global-shortcut: registered {spec}"));
+            }
+        }
+        Err(error) => panel_log(&format!("global-shortcut: parse failed for {spec}: {error}")),
+    }
 }
 
 #[tauri::command]
@@ -680,6 +711,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_nspanel::init())
+        .plugin(
+            GlobalShortcutBuilder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        toggle_panel_at_native_status_anchor(app.clone(), "global-shortcut");
+                    }
+                })
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             append_event_history,
             clear_event_history,
@@ -713,6 +753,8 @@ pub fn run() {
             let app_handle = app.handle().clone();
 
             install_native_status_item(&app_handle);
+
+            apply_global_shortcut(&app_handle, &settings::load_settings().global_shortcut);
 
             setup_panel(&app_handle);
             if let Some(window) = app_handle.get_webview_window("onboarding") {

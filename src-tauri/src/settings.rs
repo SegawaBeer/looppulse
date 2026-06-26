@@ -67,6 +67,8 @@ pub struct AppSettings {
     pub history_enabled: bool,
     #[serde(default = "default_history_retention_days")]
     pub history_retention_days: u64,
+    #[serde(default = "default_global_shortcut")]
+    pub global_shortcut: String,
     #[serde(default)]
     pub onboarding_completed: bool,
 }
@@ -99,6 +101,7 @@ impl Default for AppSettings {
             token_warning_threshold: default_token_warning_threshold(),
             history_enabled: true,
             history_retention_days: default_history_retention_days(),
+            global_shortcut: default_global_shortcut(),
             onboarding_completed: false,
         }
     }
@@ -124,6 +127,15 @@ impl AppSettings {
         self.token_warning_threshold = self.token_warning_threshold.clamp(10_000, 5_000_000);
         self.history_retention_days = self.history_retention_days.clamp(1, 365);
         self.path_display_mode = normalize_path_display_mode(&self.path_display_mode);
+
+        self.global_shortcut = {
+            let trimmed = self.global_shortcut.trim();
+            if trimmed.is_empty() {
+                default_global_shortcut()
+            } else {
+                trimmed.to_string()
+            }
+        };
 
         self.enabled_agents = dedupe_non_empty(self.enabled_agents);
         self.hidden_projects = dedupe_non_empty(self.hidden_projects);
@@ -384,6 +396,10 @@ fn default_token_warning_threshold() -> u64 {
 
 fn default_history_retention_days() -> u64 {
     30
+}
+
+fn default_global_shortcut() -> String {
+    "Alt+Q".to_string()
 }
 
 #[cfg(test)]

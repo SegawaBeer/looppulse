@@ -11,6 +11,7 @@
   } from "@tauri-apps/plugin-notification";
   import { onMount } from "svelte";
   import Onboarding from "./lib/Onboarding.svelte";
+  import ShortcutRecorder from "./lib/ShortcutRecorder.svelte";
   import { STATUS, statusColor, riskColor } from "./tokens";
   import {
     popDelay,
@@ -108,7 +109,8 @@
       summary: "再点击一次图标会收回面板；每张卡片代表一个正在被观察的 Agent 会话。",
       body: [
         "列表适合快速扫状态；点击任意会话后，可以查看项目、模型、权限观察和告警原因。",
-        "出现问题时，卡片里的“聚焦”可以把对应窗口找出来，减少在多个终端之间翻找。"
+        "出现问题时，卡片里的“聚焦”可以把对应窗口找出来，减少在多个终端之间翻找。",
+        "如果菜单栏图标被刘海挡住点不到，按 ⌥Q 也能随时唤起或收回面板，可在设置里改成你习惯的组合键。"
       ]
     },
     {
@@ -449,6 +451,7 @@
       tokenWarningThreshold: 80_000,
       historyEnabled: true,
       historyRetentionDays: 30,
+      globalShortcut: "Alt+Q",
       onboardingCompleted: false
     };
   }
@@ -623,6 +626,10 @@
     next.codexDataRoots = dedupeStrings(next.codexDataRoots);
     next.opencodeDataRoots = dedupeStrings(next.opencodeDataRoots);
     next.remotePreviewFields = normalizeRemotePreviewFields(next.remotePreviewFields);
+    next.globalShortcut =
+      typeof next.globalShortcut === "string" && next.globalShortcut.trim()
+        ? next.globalShortcut.trim()
+        : defaults.globalShortcut;
     return next;
   }
 
@@ -3137,6 +3144,21 @@
           onchange={handleLaunchAtLoginToggle}
         />
       </label>
+
+      <div class="shortcut-entry">
+        <div class="shortcut-entry-head">
+          <strong>唤起快捷键</strong>
+          <span>菜单栏图标被刘海挡住时，用快捷键随时唤起或收回面板</span>
+        </div>
+        <ShortcutRecorder
+          value={settings.globalShortcut}
+          defaultValue="Alt+Q"
+          onChange={(next) => {
+            settings.globalShortcut = next;
+            void saveSettings();
+          }}
+        />
+      </div>
 
       <div class="guide-entry">
         <div>
@@ -6336,6 +6358,32 @@
     border-color: rgba(78, 202, 255, 0.34);
     background: rgba(78, 202, 255, 0.16);
     color: rgba(255, 255, 255, 0.88);
+  }
+
+  .shortcut-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+    padding: 10px;
+    border-radius: 8px;
+    background: var(--obs-surface-card-muted);
+    border: 0.5px solid var(--obs-border-soft);
+  }
+
+  .shortcut-entry-head strong {
+    display: block;
+    font-size: 12px;
+    line-height: 1.25;
+    color: var(--obs-text-strong);
+  }
+
+  .shortcut-entry-head span {
+    display: block;
+    margin-top: 4px;
+    color: var(--obs-text-muted);
+    font-size: 10px;
+    line-height: 1.35;
   }
 
   .compact-switch {

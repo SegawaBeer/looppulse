@@ -244,6 +244,7 @@ export interface AppSettings {
   tokenWarningThreshold: number;
   historyEnabled: boolean;
   historyRetentionDays: number;
+  globalShortcut: string;
   onboardingCompleted: boolean;
 }
 
