@@ -2814,7 +2814,8 @@ mod tests {
     }
 
     #[test]
-    fn free_plan_locks_pro_risks_out_of_health_state() {
+    fn default_settings_expose_pro_risks() {
+        // 套餐区分已取消：默认即全量，原 Pro 风险不再被过滤。
         let settings = AppSettings::default();
         let mut session = sample_session();
         session.token_history = vec![9_000, 10_000, 11_000, 12_000, 1_500_000];
@@ -2827,10 +2828,13 @@ mod tests {
             &settings,
         );
 
-        assert_eq!(session.tier.plan, "free");
-        assert_eq!(session.tier.pro_locked_count, 1);
-        assert!(session.risks.iter().all(|risk| !risk.is_pro));
-        assert_eq!(session.risk_level, "ok");
+        assert_eq!(session.tier.plan, "pro");
+        assert_eq!(session.tier.pro_locked_count, 0);
+        assert!(session
+            .risks
+            .iter()
+            .any(|risk| risk.kind == "token_spike" && risk.is_pro));
+        assert_eq!(session.risk_level, "warning");
     }
 
     #[test]

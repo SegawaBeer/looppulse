@@ -162,7 +162,8 @@ impl AppSettings {
     }
 
     pub fn is_pro(&self) -> bool {
-        self.plan == "pro"
+        // 套餐区分已取消：全量开放原 Pro 功能。
+        true
     }
 
     pub fn claude_data_roots(&self) -> Vec<PathBuf> {
@@ -240,12 +241,9 @@ fn dedupe_non_empty(values: Vec<String>) -> Vec<String> {
     next
 }
 
-fn normalize_plan(plan: &str) -> String {
-    if plan.eq_ignore_ascii_case("pro") {
-        "pro".to_string()
-    } else {
-        "free".to_string()
-    }
+fn normalize_plan(_plan: &str) -> String {
+    // 套餐区分已取消：忽略历史值，统一归一化为 pro。
+    "pro".to_string()
 }
 
 fn normalize_path_display_mode(mode: &str) -> String {
@@ -314,7 +312,8 @@ fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 fn default_plan() -> String {
-    "free".to_string()
+    // 套餐区分已取消：默认即全量功能。
+    "pro".to_string()
 }
 
 fn default_path_display_mode() -> String {
@@ -492,22 +491,23 @@ mod tests {
     }
 
     #[test]
-    fn plan_is_normalized_to_free_or_pro() {
-        let free = AppSettings {
+    fn plan_always_normalizes_to_pro() {
+        // 套餐区分已取消：任何历史值都应归一化为 pro，且 is_pro 恒真。
+        let from_legacy_free = AppSettings {
+            plan: "free".to_string(),
+            ..AppSettings::default()
+        }
+        .normalized();
+        let from_unknown = AppSettings {
             plan: "team".to_string(),
             ..AppSettings::default()
         }
         .normalized();
-        let pro = AppSettings {
-            plan: "PRO".to_string(),
-            ..AppSettings::default()
-        }
-        .normalized();
 
-        assert_eq!(free.plan, "free");
-        assert!(!free.is_pro());
-        assert_eq!(pro.plan, "pro");
-        assert!(pro.is_pro());
+        assert_eq!(from_legacy_free.plan, "pro");
+        assert!(from_legacy_free.is_pro());
+        assert_eq!(from_unknown.plan, "pro");
+        assert!(from_unknown.is_pro());
     }
 
     #[test]

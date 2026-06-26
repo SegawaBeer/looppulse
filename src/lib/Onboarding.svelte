@@ -98,8 +98,8 @@
             <span>隐</span>
           </div>
           <div class="privacy-field-grid">
-            {#each ["身份", "状态", "风险", "用量", "上下文", "路径", "环境", "时间线"] as field, index}
-              <span class:locked={index > 5}>{field}{index > 5 ? " Pro" : ""}</span>
+            {#each ["身份", "状态", "风险", "用量", "上下文", "路径", "环境", "时间线"] as field}
+              <span>{field}</span>
             {/each}
           </div>
           <div class="privacy-redacted">
@@ -707,12 +707,6 @@
     color: rgba(255, 255, 255, 0.78);
     font-size: 11px;
     font-weight: 700;
-  }
-
-  .privacy-field-grid span.locked {
-    color: rgba(255, 222, 174, 0.78);
-    background: rgba(255, 184, 77, 0.10);
-    border-color: rgba(255, 184, 77, 0.22);
   }
 
   .privacy-redacted {

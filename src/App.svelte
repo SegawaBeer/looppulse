@@ -170,7 +170,6 @@
   let inspectorMode = $state<"detail" | "timeline">("timeline");
   let settingsTab = $state<SettingsTab>("general");
   let eventHistory: SessionEvent[] = $state([]);
-  let upgradePrompt = $state("");
   let settingsFeedback = $state("");
   let settingsFeedbackScope = $state<SettingsFeedbackScope>("general");
   let settingsFeedbackTone = $state<SettingsFeedbackTone>("info");
@@ -426,7 +425,7 @@
 
   function defaultSettings(): AppSettings {
     return {
-      plan: "free",
+      plan: "pro",
       notificationsEnabled: false,
       launchAtLogin: false,
       notifyCritical: true,
@@ -468,7 +467,8 @@
   }
 
   function isProPlan(): boolean {
-    return settings.plan === "pro";
+    // 套餐区分已取消：全量功能始终开放。
+    return true;
   }
 
   function showSettingsFeedback(
@@ -485,23 +485,11 @@
     if (settingsFeedbackScope === scope) {
       settingsFeedback = "";
     }
-    upgradePrompt = "";
   }
 
-  function requirePro(feature: string, scope: SettingsFeedbackScope = "general"): boolean {
-    if (isProPlan()) return true;
-    upgradePrompt = `${feature} 属于 Pro 能力`;
-    notificationStatus = upgradePrompt;
-    showSettingsFeedback(upgradePrompt, scope, "warning");
-    return false;
-  }
-
-  async function setPlan(plan: "free" | "pro") {
-    settings.plan = plan;
-    await saveSettings();
-    if (plan === "pro") upgradePrompt = "";
-    if (plan === "pro") showSettingsFeedback("Pro 开发模式已启用，完整诊断能力已解锁。", "general", "ok");
-    notificationStatus = plan === "pro" ? "已切换到 Pro 开发模式" : "已切换到免费版";
+  function requirePro(_feature: string, _scope: SettingsFeedbackScope = "general"): boolean {
+    // 套餐区分已取消：所有功能始终可用。
+    return true;
   }
 
   async function loadSettings() {
@@ -606,7 +594,7 @@
   function normalizeSettings(value: Partial<AppSettings>): AppSettings {
     const defaults = defaultSettings();
     const next = { ...defaults, ...value };
-    next.plan = next.plan === "pro" ? "pro" : "free";
+    next.plan = "pro";
     next.cooldownMinutes = clampNumber(next.cooldownMinutes, 1, 120);
     next.refreshIntervalSeconds = clampNumber(next.refreshIntervalSeconds, 2, 60);
     next.contextWarningPercent = clampNumber(next.contextWarningPercent, 50, 98);
@@ -658,8 +646,7 @@
   }
 
   function effectiveRemotePreviewFields(): string[] {
-    const freeFields = new Set(remoteFieldOptions.filter((option) => option.free).map((option) => option.key));
-    return settings.remotePreviewFields.filter((field) => isProPlan() || freeFields.has(field));
+    return settings.remotePreviewFields;
   }
 
   async function saveSettings() {
@@ -1238,32 +1225,21 @@
     return settings.remotePreviewFields.includes(field);
   }
 
-  function remoteFieldAvailable(field: string): boolean {
-    const option = remoteFieldOptions.find((item) => item.key === field);
-    return Boolean(option?.free || isProPlan());
-  }
-
-  function remoteFieldSelectedButLocked(field: string): boolean {
-    return remoteFieldEnabled(field) && !remoteFieldAvailable(field);
+  function remoteFieldAvailable(_field: string): boolean {
+    // 套餐区分已取消：所有远程预览字段均可用。
+    return true;
   }
 
   function toggleRemoteField(field: string) {
     const option = remoteFieldOptions.find((item) => item.key === field);
     if (!option) return;
-    const locked = !option.free && !isProPlan();
 
     if (remoteFieldEnabled(field)) {
       settings.remotePreviewFields = settings.remotePreviewFields.filter((item) => item !== field);
       showSettingsFeedback(`${option.label}已从远程预览中移除。`, "remote", "ok");
     } else {
       settings.remotePreviewFields = normalizeRemotePreviewFields([...settings.remotePreviewFields, field]);
-      showSettingsFeedback(
-        locked
-          ? `${option.label}已加入预览选择，升级 Pro 后会包含在远程数据中。`
-          : `${option.label}已加入远程预览。`,
-        "remote",
-        locked ? "warning" : "ok"
-      );
+      showSettingsFeedback(`${option.label}已加入远程预览。`, "remote", "ok");
     }
     void saveSettings();
   }
@@ -2305,23 +2281,6 @@
     onToggleAutoShow={(checked) => { onboardingDoNotAutoShow = checked; void saveOnboardingPreference(); }}
   />
 {:else if currentWindowLabel === "dashboard"}
-  {#if !isProPlan()}
-    <div class="dashboard-app locked-dashboard">
-      <section class="pro-gate">
-        <div class="brand-mark">观</div>
-        <span>Pro 能力</span>
-        <h1>完整视图属于专业监控工作台</h1>
-        <p>免费版继续提供菜单栏实时状态、基础异常提醒和会话详情。Pro 解锁完整视图、事件时间线持久化、导出报告、环境深度信号和阈值细调。</p>
-        <div class="pro-feature-grid">
-          <div><strong>完整视图</strong><span>多会话表格、筛选排序、项目概览</span></div>
-          <div><strong>事件历史</strong><span>重启后保留时间线，支持导出</span></div>
-          <div><strong>深度诊断</strong><span>端口、进程、Pro 风险解释</span></div>
-          <div><strong>高级通知</strong><span>阈值细调和 Pro 信号提醒</span></div>
-        </div>
-        <button onclick={() => setPlan("pro")}>启用 Pro 开发模式</button>
-      </section>
-    </div>
-  {:else}
   <div class="dashboard-app">
     <aside class="dashboard-sidebar">
       <div class="dash-brand">
@@ -2352,7 +2311,7 @@
           <em>{warningCount}</em>
         </button>
         <button class:active={dashboardFilter === "pro"} onclick={() => dashboardFilter = "pro"}>
-          <span>Pro 信号</span>
+          <span>深度信号</span>
           <em>{proLockedCount}</em>
         </button>
       </nav>
@@ -2539,7 +2498,7 @@
                 {#if selectedSession.risks.length > 0}
                   {#each selectedSession.risks as risk}
                     <div class="inspector-risk">
-                      <strong>{risk.title}{risk.is_pro ? " · Pro" : ""}</strong>
+                      <strong>{risk.title}</strong>
                       <p>{risk.message}</p>
                       {#if risk.evidence}
                         <em>证据：{risk.evidence}</em>
@@ -2690,7 +2649,6 @@
       </section>
     </main>
   </div>
-  {/if}
 {:else}
 <div class="panel-wrap">
 <div class={`panel-shell${panelAnimationReady ? " is-ready" : ""}${hasShown ? " is-shown" : ""}${panelIsClosing ? " is-closing" : ""}`} style:--anchor-x={`${panelAnchorX}%`}>
@@ -2812,7 +2770,7 @@
         <div class="detail-section panel-pop-item" style="--pop-delay:178ms">
           <div class="section-title">
             <span>环境信号</span>
-            <em>Pro 诊断</em>
+            <em>深度诊断</em>
           </div>
           <div class="signal-grid">
             <div class="signal-card">
@@ -2861,14 +2819,11 @@
         <div class="detail-section panel-pop-item" style="--pop-delay:206ms">
           <div class="section-title">
             <span>告警原因</span>
-            {#if selectedSession.tier?.pro_locked_count > 0}
-              <em>Pro +{selectedSession.tier.pro_locked_count}</em>
-            {/if}
           </div>
           {#if selectedSession.risks.length > 0}
             <div class="risk-list">
               {#each selectedSession.risks as risk}
-                <div class={`risk-row severity-${risk.severity}${risk.is_pro ? " pro-risk" : ""}`}>
+                <div class={`risk-row severity-${risk.severity}`}>
                   <span></span>
                   <div>
                     <strong>{risk.title}</strong>
@@ -2880,9 +2835,6 @@
                       <em>建议：{risk.action}</em>
                     {/if}
                   </div>
-                  {#if risk.is_pro}
-                    <em>Pro</em>
-                  {/if}
                 </div>
               {/each}
             </div>
@@ -3061,25 +3013,10 @@
       <div class="settings-head">
         <div>
           <strong>监控设置</strong>
-          <span>{settingsStatus} · {settings.plan === "pro" ? "Pro" : "Free"} · {notificationStatus}</span>
+          <span>{settingsStatus} · {notificationStatus}</span>
         </div>
         <button class="mini-button" onclick={toggleSettings}>完成</button>
       </div>
-
-      <div class={`plan-card plan-${settings.plan}`}>
-        <div>
-          <span>当前版本</span>
-          <strong>{settings.plan === "pro" ? "Pro 开发模式" : "Free"}</strong>
-          <p>{settings.plan === "pro" ? "已解锁完整视图、时间线持久化、导出和高级阈值。" : "基础监控和核心通知可用，专业诊断能力可预览。"}</p>
-        </div>
-        <button onclick={() => setPlan(settings.plan === "pro" ? "free" : "pro")}>
-          {settings.plan === "pro" ? "切回 Free" : "模拟 Pro"}
-        </button>
-      </div>
-
-      {#if upgradePrompt && !isProPlan()}
-        <div class="upgrade-note">{upgradePrompt}</div>
-      {/if}
 
       {#if settingsFeedback && (settingsFeedbackScope === "general" || settingsFeedbackScope === "alerts" || settingsFeedbackScope === "privacy")}
         <div class={`settings-inline-feedback tone-${settingsFeedbackTone}`}>{settingsFeedback}</div>
@@ -3172,7 +3109,7 @@
       <label class="switch-row">
         <span>
           <strong>Agent 异常通知</strong>
-          <em>免费版可用</em>
+          <em>状态变化时提醒</em>
         </span>
         <input
           type="checkbox"
@@ -3195,16 +3132,13 @@
             <input type="checkbox" bind:checked={settings.notifyCompletion} onchange={() => void saveSettings()} />
             完成
           </label>
-          <label class="pro-setting">
+          <label>
             <input
               type="checkbox"
               bind:checked={settings.notifyProHints}
-              onchange={() => {
-                if (requirePro("Pro 信号通知", "alerts")) void saveSettings();
-                else settings.notifyProHints = false;
-              }}
+              onchange={() => void saveSettings()}
             />
-            Pro 信号
+            深度信号
           </label>
         </div>
 
@@ -3223,20 +3157,9 @@
         </div>
       </div>
 
-      <div
-        class={`settings-section pro-setting-block${isProPlan() ? "" : " locked-block"}`}
-      >
-        {#if !isProPlan()}
-          <button
-            type="button"
-            class="locked-block-overlay"
-            aria-label="告警阈值细调属于 Pro 能力"
-            onclick={() => requirePro("告警阈值细调", "alerts")}
-          ></button>
-        {/if}
+      <div class="settings-section">
         <div class="settings-section-title">
           <span>告警阈值</span>
-          <em>{isProPlan() ? "Pro 已解锁" : "Pro 可细调"}</em>
         </div>
         <div class="threshold-grid">
           <label>
@@ -3245,7 +3168,6 @@
               type="number"
               min="3"
               max="120"
-              disabled={!isProPlan()}
               bind:value={settings.stalledWarningMinutes}
               onchange={() => setStalledWarning(settings.stalledWarningMinutes)}
             />
@@ -3253,7 +3175,6 @@
           <label>
             <span>用量突增</span>
             <select
-              disabled={!isProPlan()}
               bind:value={settings.tokenWarningThreshold}
               onchange={() => setTokenThreshold(settings.tokenWarningThreshold)}
             >
@@ -3266,7 +3187,6 @@
           <label>
             <span>额度预警</span>
             <select
-              disabled={!isProPlan()}
               bind:value={settings.quotaNoticePercent}
               onchange={() => setQuotaNotice(settings.quotaNoticePercent)}
             >
@@ -3279,7 +3199,6 @@
           <label>
             <span>额度高危</span>
             <select
-              disabled={!isProPlan()}
               bind:value={settings.quotaCriticalPercent}
               onchange={() => setQuotaCritical(settings.quotaCriticalPercent)}
             >
@@ -3428,9 +3347,9 @@
       <div class="settings-section">
         <div class="settings-section-title">
           <span>事件历史</span>
-          <em>{isProPlan() ? `${eventHistory.length} 条` : "Pro 持久化"}</em>
+          <em>{eventHistory.length} 条</em>
         </div>
-        <label class={`switch-row compact-switch${isProPlan() ? "" : " locked-control"}`}>
+        <label class="switch-row compact-switch">
           <span>
             <strong>记录本地时间线</strong>
             <em>{settings.historyEnabled ? `${settings.historyRetentionDays} 天保留` : "已关闭"}</em>
@@ -3438,20 +3357,16 @@
           <input
             type="checkbox"
             bind:checked={settings.historyEnabled}
-            onchange={() => {
-              if (requirePro("事件历史持久化", "history")) void saveSettings();
-              else settings.historyEnabled = false;
-            }}
+            onchange={() => void saveSettings()}
           />
         </label>
         <div class="cooldown-row">
           <span>保留时间</span>
-          <div class={`segmented ${isProPlan() ? "" : "locked-segmented"}`}>
+          <div class="segmented">
             {#each [7, 30, 90] as days}
               <button
                 class:active={settings.historyRetentionDays === days}
-                aria-disabled={!isProPlan()}
-                title={isProPlan() ? `${days} 天保留` : "Pro 可调整历史保留时间"}
+                title={`${days} 天保留`}
                 onclick={() => setHistoryRetentionDays(days)}
               >
                 {days}d
@@ -3461,13 +3376,10 @@
         </div>
         {#if settingsFeedback && settingsFeedbackScope === "history"}
           <div class={`settings-inline-feedback tone-${settingsFeedbackTone}`}>{settingsFeedback}</div>
-        {:else if !isProPlan()}
-          <p class="settings-note compact-note">当前按 30 天策略预览；调整保留时间和导出历史属于 Pro 能力。</p>
         {/if}
         <div class="history-action-row">
           <button
-            class:pro-action={!isProPlan()}
-            title={isProPlan() ? "复制事件历史导出" : "Pro 可导出事件历史"}
+            title="复制事件历史导出"
             onclick={copyEventHistoryExport}
           >复制导出</button>
           <button class="danger-action" onclick={clearEventHistory}>清空历史</button>
@@ -3511,21 +3423,15 @@
           {#each remoteFieldOptions as option}
             <button
               class:active={remoteFieldEnabled(option.key) && remoteFieldAvailable(option.key)}
-              class:pro-field={!option.free}
-              class:locked-field={!option.free && !isProPlan()}
-              class:selected-locked-field={remoteFieldSelectedButLocked(option.key)}
-              aria-disabled={!option.free && !isProPlan()}
-              title={!option.free && !isProPlan() ? `${option.label}字段属于 Pro 远程预览` : `${option.label}字段`}
+              title={`${option.label}字段`}
               onclick={() => toggleRemoteField(option.key)}
             >
-              {option.label}{option.free ? "" : " Pro"}
+              {option.label}
             </button>
           {/each}
         </div>
         {#if settingsFeedback && settingsFeedbackScope === "remote"}
           <div class={`settings-inline-feedback tone-${settingsFeedbackTone}`}>{settingsFeedback}</div>
-        {:else if !isProPlan()}
-          <p class="settings-note compact-note">环境、时间线是远程深度字段，免费版会保留按钮预览但不会导出。</p>
         {/if}
         <div class="remote-preview-box">
           <pre>{JSON.stringify(remotePreviewPayload(), null, 2).slice(0, 720)}</pre>
@@ -3585,88 +3491,6 @@
     background:
       linear-gradient(135deg, #111417 0%, #171b1f 48%, #101418 100%);
     color: #eef3f7;
-  }
-
-  .locked-dashboard {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 36px;
-  }
-
-  .pro-gate {
-    width: min(720px, 100%);
-    border-radius: 12px;
-    border: 1px solid rgba(78, 202, 255, 0.18);
-    background: rgba(255, 255, 255, 0.055);
-    padding: 34px;
-    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
-  }
-
-  .pro-gate > span {
-    display: block;
-    margin-top: 16px;
-    color: var(--lp-accent);
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .pro-gate h1 {
-    margin: 8px 0 0;
-    font-size: 30px;
-    line-height: 1.1;
-  }
-
-  .pro-gate p {
-    margin: 12px 0 0;
-    max-width: 580px;
-    color: rgba(238, 243, 247, 0.56);
-    font-size: 13px;
-    line-height: 1.6;
-  }
-
-  .pro-feature-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-    margin-top: 22px;
-  }
-
-  .pro-feature-grid div {
-    border-radius: 9px;
-    border: 1px solid var(--lp-border-subtle);
-    background: var(--lp-surface-sunken);
-    padding: 13px;
-  }
-
-  .pro-feature-grid strong,
-  .pro-feature-grid span {
-    display: block;
-  }
-
-  .pro-feature-grid strong {
-    font-size: 13px;
-  }
-
-  .pro-feature-grid span {
-    margin-top: 6px;
-    color: rgba(238, 243, 247, 0.44);
-    font-size: 11px;
-    line-height: 1.4;
-  }
-
-  .pro-gate button {
-    appearance: none;
-    height: 38px;
-    margin-top: 24px;
-    border-radius: 8px;
-    border: 1px solid rgba(78, 202, 255, 0.34);
-    background: rgba(78, 202, 255, 0.16);
-    color: #eef3f7;
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-    padding: 0 16px;
   }
 
   .dashboard-sidebar {
@@ -5135,8 +4959,7 @@
   .hidden-input-row button:focus-visible,
   .statusline-box button:focus-visible,
   .test-notification-btn:focus-visible,
-  .guide-entry button:focus-visible,
-  .pro-setting-block:focus-visible {
+  .guide-entry button:focus-visible {
     outline: 1px solid rgba(78, 202, 255, 0.72);
     outline-offset: 2px;
   }
@@ -5574,10 +5397,6 @@
     border-radius: 5px;
     padding: 2px 5px;
     background: var(--obs-surface-card-muted);
-  }
-
-  .risk-row.pro-risk {
-    border-color: var(--obs-border-strong);
   }
 
   .permission-list {
@@ -6154,73 +5973,12 @@
     color: var(--obs-text-muted);
   }
 
-  .plan-card {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 10px;
-    align-items: center;
-    margin-bottom: 10px;
-    padding: 10px;
-    border-radius: 9px;
-    background: var(--obs-surface-card-muted);
-    border: 0.5px solid var(--obs-border-muted);
-  }
-
-  .plan-card.plan-pro {
-    background: var(--obs-status-info-soft);
-    border-color: var(--obs-status-info-border);
-  }
-
-  .plan-card span,
-  .plan-card p {
-    display: block;
-    font-size: 9.5px;
-    color: var(--obs-text-muted);
-  }
-
-  .plan-card strong {
-    display: block;
-    margin-top: 3px;
-    font-size: 13px;
-    color: var(--obs-text-primary);
-  }
-
-  .plan-card p {
-    margin: 5px 0 0;
-    line-height: 1.35;
-  }
-
-  .plan-card button {
-    appearance: none;
-    height: 28px;
-    border-radius: var(--obs-control-radius);
-    border: 0.5px solid var(--obs-status-info-border);
-    background: var(--obs-status-info-soft);
-    color: var(--obs-text-strong);
-    font: inherit;
-    font-size: 10px;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .plan-card button:hover,
   .mini-button:hover,
   .hidden-input-row button:hover,
   .statusline-box button:not(:disabled):hover {
     border-color: rgba(78, 202, 255, 0.34);
     background: rgba(78, 202, 255, 0.16);
     color: rgba(255, 255, 255, 0.88);
-  }
-
-  .upgrade-note {
-    margin-bottom: 10px;
-    border-radius: 8px;
-    padding: 8px 10px;
-    background: var(--obs-status-warning-soft);
-    border: 0.5px solid var(--obs-status-warning-border);
-    color: var(--obs-text-strong);
-    font-size: 10.5px;
-    line-height: 1.35;
   }
 
   .settings-inline-feedback {
@@ -6417,54 +6175,6 @@
     width: 11px;
     height: 11px;
     accent-color: var(--lp-ok);
-  }
-
-  .pro-setting {
-    color: rgba(255, 255, 255, 0.70) !important;
-    border: 0.5px solid rgba(255, 255, 255, 0.10);
-  }
-
-  .pro-setting-block {
-    opacity: 0.92;
-  }
-
-  .locked-block,
-  .locked-control {
-    position: relative;
-  }
-
-  .locked-block {
-    cursor: pointer;
-    border-radius: 8px;
-  }
-
-  .locked-block-overlay {
-    appearance: none;
-    position: absolute;
-    inset: 0;
-    z-index: 2;
-    border: 0;
-    border-radius: 8px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .locked-block input,
-  .locked-block select,
-  .locked-control input {
-    opacity: 0.52;
-    cursor: pointer;
-  }
-
-  .locked-block:hover .threshold-grid label,
-  .locked-control:hover {
-    border-color: rgba(255, 195, 77, 0.18);
-    background: rgba(255, 195, 77, 0.065);
-  }
-
-  .locked-block-overlay:focus-visible {
-    outline: 1px solid rgba(255, 195, 77, 0.72);
-    outline-offset: 2px;
   }
 
   .threshold-grid {
@@ -6696,45 +6406,6 @@
     background: rgba(78, 202, 255, 0.14);
   }
 
-  .remote-field-grid button.pro-field:not(.active) {
-    color: rgba(255, 255, 255, 0.36);
-  }
-
-  .remote-field-grid button.locked-field {
-    border-color: rgba(255, 195, 77, 0.13);
-    background: rgba(255, 195, 77, 0.055);
-    color: rgba(255, 235, 196, 0.52);
-  }
-
-  .remote-field-grid button.selected-locked-field {
-    color: rgba(238, 252, 255, 0.88);
-    border-color: rgba(78, 202, 255, 0.30);
-    background: linear-gradient(180deg, rgba(78, 202, 255, 0.18), rgba(78, 202, 255, 0.10));
-  }
-
-  .remote-field-grid button.locked-field:hover {
-    border-color: rgba(255, 195, 77, 0.28);
-    background: rgba(255, 195, 77, 0.10);
-    color: rgba(255, 242, 216, 0.82);
-  }
-
-  .remote-field-grid button.selected-locked-field:hover {
-    color: rgba(238, 252, 255, 0.92);
-    border-color: rgba(78, 202, 255, 0.38);
-    background: linear-gradient(180deg, rgba(78, 202, 255, 0.22), rgba(78, 202, 255, 0.13));
-  }
-
-  .remote-field-grid button.locked-field::after {
-    content: "";
-    display: inline-block;
-    width: 4px;
-    height: 4px;
-    margin-left: 4px;
-    border-radius: 999px;
-    background: rgba(255, 195, 77, 0.70);
-    vertical-align: middle;
-  }
-
   .remote-preview-box {
     max-height: 82px;
     overflow-y: auto;
@@ -6784,18 +6455,6 @@
     border-color: rgba(78, 202, 255, 0.34);
     background: rgba(78, 202, 255, 0.15);
     color: rgba(255, 255, 255, 0.88);
-  }
-
-  .history-action-row button.pro-action {
-    border-color: rgba(255, 195, 77, 0.20);
-    background: rgba(255, 195, 77, 0.075);
-    color: rgba(255, 235, 196, 0.72);
-  }
-
-  .history-action-row button.pro-action::after {
-    content: " Pro";
-    font-size: 8px;
-    color: rgba(255, 195, 77, 0.82);
   }
 
   .history-action-row button.active-action {
@@ -6879,24 +6538,6 @@
   .segmented button:hover {
     color: rgba(255, 255, 255, 0.82);
     background: rgba(255, 255, 255, 0.11);
-  }
-
-  .locked-segmented button {
-    color: rgba(255, 235, 196, 0.54);
-    border-color: rgba(255, 195, 77, 0.13);
-    background: rgba(255, 195, 77, 0.055);
-  }
-
-  .locked-segmented button.active {
-    color: rgba(255, 242, 216, 0.82);
-    border-color: rgba(255, 195, 77, 0.26);
-    background: rgba(255, 195, 77, 0.11);
-  }
-
-  .locked-segmented button:hover {
-    color: rgba(255, 242, 216, 0.86);
-    border-color: rgba(255, 195, 77, 0.28);
-    background: rgba(255, 195, 77, 0.10);
   }
 
   /* 可访问性：尊重系统“减弱动态效果”。关闭呼吸/滑入/位移类动画，
