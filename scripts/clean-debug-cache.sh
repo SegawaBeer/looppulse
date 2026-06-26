@@ -26,11 +26,11 @@ rm -rf \
   "$DEBUG_DIR/examples"
 
 rm -f \
-  "$DEBUG_DIR/libobserver_lib.a" \
-  "$DEBUG_DIR/libobserver_lib.d" \
-  "$DEBUG_DIR/libobserver_lib.dylib" \
-  "$DEBUG_DIR/libobserver_lib.rlib" \
-  "$DEBUG_DIR/observer.d"
+  "$DEBUG_DIR/liblooppulse_lib.a" \
+  "$DEBUG_DIR/liblooppulse_lib.d" \
+  "$DEBUG_DIR/liblooppulse_lib.dylib" \
+  "$DEBUG_DIR/liblooppulse_lib.rlib" \
+  "$DEBUG_DIR/looppulse.d"
 
 if [[ -d "$DEBUG_DIR/bundle/macos" ]]; then
   find "$DEBUG_DIR/bundle/macos" -mindepth 1 -maxdepth 1 ! -name "LoopPulse.app" -exec rm -rf {} +

@@ -45,7 +45,7 @@ const PANEL_AFTER_HIDE_EVENT_TAP_SUPPRESS_MS: u64 = 700;
 const PANEL_EVENT_TAP_AFTER_NATIVE_SUPPRESS_MS: u64 = 2_400;
 const STATUS_ITEM_WIDTH: f64 = 32.0;
 const STATUS_ITEM_USES_TEMPLATE_IMAGE: bool = false;
-const PANEL_LOG_PATH: &str = "/tmp/observer-panel.log";
+const PANEL_LOG_PATH: &str = "/tmp/looppulse-panel.log";
 const INSTANCE_LOCK_PATH: &str = "/tmp/com.looppulse.menubar.lock";
 const LEGACY_INSTANCE_LOCK_PATH: &str = "/tmp/com.observer.menubar.lock";
 
@@ -96,8 +96,8 @@ mod status_action {
         unsafe impl NSObjectProtocol for TrayActionTarget {}
 
         impl TrayActionTarget {
-            #[unsafe(method(observerNativeStatusClicked:))]
-            fn observer_native_status_clicked(&self, _sender: &AnyObject) {
+            #[unsafe(method(looppulseNativeStatusClicked:))]
+            fn looppulse_native_status_clicked(&self, _sender: &AnyObject) {
                 super::panel_log("native status action: clicked");
                 super::toggle_panel_at_native_status_anchor(
                     self.ivars().app_handle.clone(),
@@ -105,8 +105,8 @@ mod status_action {
                 );
             }
 
-            #[unsafe(method(observerNativeStatusGesture:))]
-            fn observer_native_status_gesture(&self, _sender: &AnyObject) {
+            #[unsafe(method(looppulseNativeStatusGesture:))]
+            fn looppulse_native_status_gesture(&self, _sender: &AnyObject) {
                 super::panel_log("native status gesture: clicked");
                 super::toggle_panel_at_native_status_anchor(
                     self.ivars().app_handle.clone(),
@@ -255,7 +255,7 @@ impl TrayHealthState {
 }
 
 tauri_nspanel::tauri_panel! {
-    panel!(ObserverPanel {
+    panel!(LoopPulsePanel {
         config: {
             can_become_key_window: true,
             can_become_main_window: false,
@@ -264,7 +264,7 @@ tauri_nspanel::tauri_panel! {
         }
     })
 
-    panel_event!(ObserverPanelHandler {
+    panel_event!(LoopPulsePanelHandler {
         window_did_resign_key(notification: &objc2_foundation::NSNotification) -> (),
     })
 }
@@ -781,7 +781,7 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running observer");
+        .expect("error while running LoopPulse");
 }
 
 fn acquire_instance_lock() -> bool {
@@ -815,7 +815,7 @@ fn setup_panel(app_handle: &tauri::AppHandle) {
     // Clear title — suppresses the macOS Sonoma floating title pill on borderless panels
     let _ = window.set_title("");
 
-    let panel = window.to_panel::<ObserverPanel>().unwrap();
+    let panel = window.to_panel::<LoopPulsePanel>().unwrap();
 
     // Suppress macOS Sonoma floating title pill on borderless panels
     unsafe {
@@ -856,7 +856,7 @@ fn setup_panel(app_handle: &tauri::AppHandle) {
 
     // Resign events can be fired by AppKit during focus/menubar bookkeeping. Actual dismissal is
     // handled by explicit tray toggles, outside clicks, transparent-gutter clicks, and space changes.
-    let handler = ObserverPanelHandler::new();
+    let handler = LoopPulsePanelHandler::new();
     handler.window_did_resign_key(move |_| {
         panel_log("panel event: did resign key ignored");
     });
@@ -885,7 +885,7 @@ fn setup_status_event_tap(app_handle: tauri::AppHandle) {
     }
 
     std::thread::Builder::new()
-        .name("observer-status-event-tap".to_string())
+        .name("looppulse-status-event-tap".to_string())
         .spawn(move || {
             let tap = match core_graphics::event::CGEventTap::new(
                 core_graphics::event::CGEventTapLocation::Session,
@@ -1081,7 +1081,7 @@ fn install_native_status_item(app_handle: &tauri::AppHandle) {
             // 2026-06-22：移除已废弃的 NSStatusItem::setTarget/setAction，
             // 改为只在 button 上设置 target/action（AppKit 官方推荐路径），消除 deprecated 警告。
             button.setTarget(Some(target_object));
-            button.setAction(Some(objc2::sel!(observerNativeStatusClicked:)));
+            button.setAction(Some(objc2::sel!(looppulseNativeStatusClicked:)));
             let action_mask = objc2_app_kit::NSEventMask(
                 objc2_app_kit::NSEventMask::LeftMouseDown.0
                     | objc2_app_kit::NSEventMask::LeftMouseUp.0,
@@ -1090,7 +1090,7 @@ fn install_native_status_item(app_handle: &tauri::AppHandle) {
             let gesture = objc2_app_kit::NSClickGestureRecognizer::initWithTarget_action(
                 mtm.alloc(),
                 Some(target_object),
-                Some(objc2::sel!(observerNativeStatusGesture:)),
+                Some(objc2::sel!(looppulseNativeStatusGesture:)),
             );
             gesture.setButtonMask(1);
             gesture.setNumberOfClicksRequired(1);
@@ -1360,7 +1360,7 @@ fn show_panel(app_handle: tauri::AppHandle, panel: Arc<dyn Panel>, anchor_x: f64
     ));
     let show_handle = app_handle.clone();
     std::thread::Builder::new()
-        .name("observer-panel-show-prime".to_string())
+        .name("looppulse-panel-show-prime".to_string())
         .spawn(move || {
             std::thread::sleep(Duration::from_millis(PANEL_SHOW_ANIMATION_PRIME_MS));
             let dispatch_handle = show_handle.clone();
@@ -1434,7 +1434,7 @@ fn hide_panel(app_handle: &tauri::AppHandle, panel: &Arc<dyn Panel>, source: &st
     let hide_panel = panel.clone();
     let source_label = source.to_string();
     std::thread::Builder::new()
-        .name("observer-panel-hide-animation".to_string())
+        .name("looppulse-panel-hide-animation".to_string())
         .spawn(move || {
             std::thread::sleep(Duration::from_millis(PANEL_HIDE_ANIMATION_FALLBACK_MS));
             let dispatch_handle = hide_handle.clone();

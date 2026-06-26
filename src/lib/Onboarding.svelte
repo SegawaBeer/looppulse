@@ -31,7 +31,7 @@
     <div class="onboarding-visual" aria-hidden="true">
       {#if current.visual === "welcome"}
         <div class="welcome-visual">
-          <img class="observer-icon-large" src={iconUrl} alt="" />
+          <img class="looppulse-icon-large" src={iconUrl} alt="" />
           <div class="welcome-signal-grid">
             {#each ["ok", "work", "warning", "critical", "idle", "idle", "ok", "work", "idle"] as tone}
               <span class={`mini-signal tone-${tone}`}></span>
@@ -335,7 +335,7 @@
     gap: 34px;
   }
 
-  .observer-icon-large {
+  .looppulse-icon-large {
     width: 150px;
     height: 150px;
     border-radius: 34px;

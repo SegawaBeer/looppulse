@@ -3009,7 +3009,7 @@ mod tests {
     #[test]
     fn parses_codex_rate_limit_windows() {
         let dir = std::env::temp_dir().join(format!(
-            "observer-rate-{}",
+            "looppulse-rate-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

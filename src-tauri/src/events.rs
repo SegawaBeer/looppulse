@@ -2,7 +2,8 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-const APP_DIR: &str = "observer";
+const APP_DIR: &str = "looppulse";
+const LEGACY_APP_DIR: &str = "observer";
 const DB_FILE: &str = "events.sqlite3";
 const MAX_EVENTS: i64 = 500;
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -127,6 +128,15 @@ fn open_connection() -> Result<Connection, String> {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
 
+    // 新库不存在但旧 observer 库存在时，一次性迁移历史，保住已安装用户的事件记录。
+    if !path.exists() {
+        if let Some(legacy) = legacy_db_path() {
+            if legacy.exists() {
+                let _ = std::fs::copy(&legacy, &path);
+            }
+        }
+    }
+
     let conn = Connection::open(path).map_err(|error| error.to_string())?;
     init_schema(&conn)?;
     Ok(conn)
@@ -157,6 +167,10 @@ fn db_path() -> Result<PathBuf, String> {
     dirs::data_local_dir()
         .map(|dir| dir.join(APP_DIR).join(DB_FILE))
         .ok_or_else(|| "cannot resolve local data directory".to_string())
+}
+
+fn legacy_db_path() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join(LEGACY_APP_DIR).join(DB_FILE))
 }
 
 fn current_timestamp() -> i64 {

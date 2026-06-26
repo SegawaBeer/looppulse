@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 const STATUSLINE_SCRIPT: &str = r#"#!/bin/bash
-# Observer StatusLine hook: writes Claude rate-limit data for Observer to read.
+# LoopPulse StatusLine hook: writes Claude rate-limit data for LoopPulse to read.
 INPUT=""
 while IFS= read -r -t 5 line || [ -n "$line" ]; do
     INPUT="${INPUT}${line}
@@ -46,12 +46,15 @@ pub struct ClaudeStatusLineStatus {
 pub fn status() -> ClaudeStatusLineStatus {
     let config_dir = claude_dir();
     let settings_path = config_dir.join("settings.json");
-    let script_path = config_dir.join("observer-statusline.sh");
+    let script_path = config_dir.join("looppulse-statusline.sh");
+    let legacy_script_path = config_dir.join("observer-statusline.sh");
     let abtop_script_path = config_dir.join("abtop-statusline.sh");
     let rate_file_path = config_dir.join("abtop-rate-limits.json");
     let configured_command = configured_statusline_command(&settings_path);
+    // 同时接受新脚本与旧 observer / abtop 脚本，使已安装旧 hook 仍被识别为“已配置”。
     let expected_commands = [
         script_path.display().to_string(),
+        legacy_script_path.display().to_string(),
         abtop_script_path.display().to_string(),
     ];
     let installed = configured_command
@@ -66,7 +69,9 @@ pub fn status() -> ClaudeStatusLineStatus {
         settings_path: settings_path.display().to_string(),
         script_path: script_path.display().to_string(),
         rate_file_path: rate_file_path.display().to_string(),
-        script_exists: script_path.exists() || abtop_script_path.exists(),
+        script_exists: script_path.exists()
+            || legacy_script_path.exists()
+            || abtop_script_path.exists(),
         rate_file_exists: rate_file_path.exists(),
         configured_command,
         installed,
@@ -77,7 +82,7 @@ pub fn status() -> ClaudeStatusLineStatus {
 pub fn install() -> Result<ClaudeStatusLineStatus, String> {
     let config_dir = claude_dir();
     std::fs::create_dir_all(&config_dir).map_err(|error| error.to_string())?;
-    let script_path = config_dir.join("observer-statusline.sh");
+    let script_path = config_dir.join("looppulse-statusline.sh");
     let settings_path = config_dir.join("settings.json");
 
     let current = status();
@@ -152,7 +157,7 @@ mod tests {
         let status = ClaudeStatusLineStatus {
             config_dir: "/tmp/.claude".to_string(),
             settings_path: "/tmp/.claude/settings.json".to_string(),
-            script_path: "/tmp/.claude/observer-statusline.sh".to_string(),
+            script_path: "/tmp/.claude/looppulse-statusline.sh".to_string(),
             rate_file_path: "/tmp/.claude/abtop-rate-limits.json".to_string(),
             script_exists: true,
             rate_file_exists: false,

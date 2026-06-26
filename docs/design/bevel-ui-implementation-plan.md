@@ -11,7 +11,7 @@ Done:
 - Created tag `pre-bevel-ui-20260608` at `4dc8553`.
 - Created working branch `codex/bevel-ui-refresh`.
 - Added Bevel reference board in `docs/design/bevel-reference/`.
-- Added Observer UX map in `docs/design/observer-ux-map.md`.
+- Added LoopPulse UX map in `docs/design/looppulse-ux-map.md`.
 
 Open note:
 

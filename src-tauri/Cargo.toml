@@ -1,5 +1,5 @@
 [package]
-name = "observer"
+name = "looppulse"
 version = "0.1.0"
 edition = "2021"
 
@@ -32,5 +32,5 @@ system-notification = { git = "https://github.com/ahkohd/tauri-toolkit", branch 
 tauri-build = { version = "2", features = [] }
 
 [lib]
-name = "observer_lib"
+name = "looppulse_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

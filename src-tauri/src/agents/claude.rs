@@ -1248,7 +1248,7 @@ mod tests {
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "observer-{label}-{}",
+            "looppulse-{label}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

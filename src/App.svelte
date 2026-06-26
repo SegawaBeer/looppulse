@@ -2,7 +2,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import observerIconUrl from "../src-tauri/icons/icon.png";
+  import looppulseIconUrl from "../src-tauri/icons/icon.png";
   import {
     isPermissionGranted,
     onAction,
@@ -583,9 +583,18 @@
 
   function loadLegacySettings(): AppSettings {
     try {
-      const raw = localStorage.getItem("observer.settings.v1");
+      // 新 key 优先；读不到回退旧 observer key 并写入新 key，保住本机已有配置。
+      const raw =
+        localStorage.getItem("looppulse.settings.v1") ??
+        localStorage.getItem("observer.settings.v1");
       if (!raw) return defaultSettings();
-      return normalizeSettings({ ...defaultSettings(), ...JSON.parse(raw) });
+      const settings = normalizeSettings({ ...defaultSettings(), ...JSON.parse(raw) });
+      try {
+        localStorage.setItem("looppulse.settings.v1", JSON.stringify(settings));
+      } catch {
+        // ignore write failure
+      }
+      return settings;
     } catch {
       return defaultSettings();
     }
@@ -1763,7 +1772,7 @@
     const enabledFields = effectiveRemotePreviewFields();
     const fields = new Set(enabledFields);
     return {
-      schema: "observer.remotePreview.v1",
+      schema: "looppulse.remotePreview.v1",
       generatedAt: new Date().toISOString(),
       fieldPolicy: {
         pathDisplayMode: settings.pathDisplayMode,
@@ -2274,7 +2283,7 @@
     steps={onboardingSteps}
     step={onboardingStep}
     doNotAutoShow={onboardingDoNotAutoShow}
-    iconUrl={observerIconUrl}
+    iconUrl={looppulseIconUrl}
     onPrev={previousOnboardingStep}
     onNext={nextOnboardingStep}
     onSelectStep={(index) => (onboardingStep = index)}
@@ -2656,7 +2665,7 @@
   <header class="panel-pop-item" style="--pop-delay:36ms">
     <div class="header-text">
       <h1>
-        <img class="panel-title-icon" src={observerIconUrl} alt="" />
+        <img class="panel-title-icon" src={looppulseIconUrl} alt="" />
         LoopPulse
       </h1>
       {#if totalCount === 0}

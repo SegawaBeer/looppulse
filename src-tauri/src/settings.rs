@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-const SETTINGS_DIR: &str = "observer";
+const SETTINGS_DIR: &str = "looppulse";
+const LEGACY_SETTINGS_DIR: &str = "observer";
 const SETTINGS_FILE: &str = "settings.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,6 +199,20 @@ pub fn load_settings() -> AppSettings {
     let Ok(path) = settings_path() else {
         return AppSettings::default();
     };
+    // 新路径优先；不存在时回退读取旧 observer 目录并一次性迁移，保住已安装用户的设置。
+    if !path.exists() {
+        if let Some(legacy) = legacy_settings_path() {
+            if legacy.exists() {
+                if let Ok(raw) = fs::read_to_string(&legacy) {
+                    if let Ok(settings) = serde_json::from_str::<AppSettings>(&raw) {
+                        let settings = settings.normalized();
+                        let _ = save_settings(settings.clone());
+                        return settings;
+                    }
+                }
+            }
+        }
+    }
     let Ok(raw) = fs::read_to_string(path) else {
         return AppSettings::default();
     };
@@ -222,6 +237,10 @@ fn settings_path() -> Result<PathBuf, String> {
     dirs::config_dir()
         .map(|dir| dir.join(SETTINGS_DIR).join(SETTINGS_FILE))
         .ok_or_else(|| "cannot resolve user config directory".to_string())
+}
+
+fn legacy_settings_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join(LEGACY_SETTINGS_DIR).join(SETTINGS_FILE))
 }
 
 fn dedupe_non_empty(values: Vec<String>) -> Vec<String> {

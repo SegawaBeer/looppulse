@@ -4,3 +4,25 @@ dist/
 src-tauri/target/
 src-tauri/Cargo.lock
 *.log
+
+# Local tooling / editor
+.claude/
+pnpm-config.json
+.vscode/
+.idea/
+*.bak
+*.swp
+*.orig
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Design process artifacts (kept locally, not part of the shipped app)
+assets/logo-concepts/
+docs/design/bevel-reference/
+
+# Internal dev notes (kept locally, not for the public repo)
+DEV_NOTES.md
+PROGRESS.md

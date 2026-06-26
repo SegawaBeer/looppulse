@@ -1,3 +1,3 @@
 fn main() {
-    observer_lib::run()
+    looppulse_lib::run()
 }
