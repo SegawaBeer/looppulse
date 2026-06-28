@@ -42,6 +42,8 @@ uploads anything.
 
 - **Menu bar panel** — a CleanMyMac-style panel slides in from the tray icon, follows
   you across Spaces, and tucks away when it loses focus.
+- **Status-aware tray icon** — the menu bar icon changes with the worst live state, so
+  you know something needs you before you even open the panel.
 - **Multi-agent monitoring** — Claude Code (`~/.claude`), Codex CLI (`~/.codex`), and
   OpenCode (local SQLite) in one place.
 - **Status at a glance** — working / thinking / waiting / rate-limited / stalled /
@@ -58,6 +60,15 @@ uploads anything.
   retention window.
 - **Privacy first** — prompt and message bodies are never shown; paths can be
   redacted, shortened, or shown in full.
+
+### The tray icon at a glance
+
+The menu bar icon reflects the worst current state across all sessions — idle, working,
+something to look at, or critical — so you can stay heads-down until it actually matters.
+
+<div align="center">
+  <img src="docs/tray-states.png" width="560" alt="LoopPulse tray icon states: Idle, Working, Attention, Critical" />
+</div>
 
 ## Privacy
 
