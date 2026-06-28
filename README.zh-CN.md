@@ -9,18 +9,13 @@
 一眼看清 Claude Code、Codex、OpenCode 此刻是在干活、卡住了、被限流，还是快到额度上限——
 不用离开键盘。
 
-[English](README.md) | 简体中文
+[English](README.md) | 简体中文 | [日本語](README.ja.md)
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%2012%2B-black)
 ![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)
 
 </div>
-
-<!--
-  截图占位 —— 把面板/菜单栏截图放到 docs/screenshot.png，并取消下一行注释。
-  ![LoopPulse 面板](docs/screenshot.png)
--->
 
 <div align="center">
   <img src="docs/screenshot.png" width="420" alt="LoopPulse 菜单栏面板" />

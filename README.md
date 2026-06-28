@@ -9,19 +9,13 @@
 See at a glance whether Claude Code, Codex, or OpenCode is working, stalled,
 rate-limited, or about to hit its quota — without leaving your keyboard.
 
-English | [简体中文](README.zh-CN.md)
+English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%2012%2B-black)
 ![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)
 
 </div>
-
-<!--
-  Screenshot placeholder — drop a panel/menu-bar screenshot at docs/screenshot.png
-  and uncomment the line below.
-  ![LoopPulse panel](docs/screenshot.png)
--->
 
 <div align="center">
   <img src="docs/screenshot.png" width="420" alt="LoopPulse menu bar panel" />
