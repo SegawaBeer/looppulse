@@ -156,6 +156,20 @@
   let panelAnimationReady = $state(false);
   let panelIsClosing = $state(false);
   let settingsOpen = $state(false);
+  // 演示模式：截图脱敏用，把真实项目名替换为仿真通用名。纯前端临时状态，不持久化。
+  let demoMode = $state(false);
+  let titleClickCount = 0;
+  let titleClickTimer: ReturnType<typeof setTimeout> | null = null;
+  const DEMO_NAMES = [
+    "project-orion",
+    "nyx-core",
+    "hadron",
+    "cobalt-relay",
+    "halcyon",
+    "vesper",
+    "andromeda-sync",
+    "obsidian-gate"
+  ];
   let selectedSessionId = $state<string | null>(null);
   let notificationStatus = $state("通知未开启");
   let settings = $state<AppSettings>(defaultSettings());
@@ -1618,7 +1632,32 @@
   }
 
   function sessionTitle(session: AgentSession): string {
+    if (demoMode) return demoName(session);
     return session.project_name || session.agent_type || "Agent Session";
+  }
+
+  function demoName(session: AgentSession): string {
+    // 按所有会话的 session_id 稳定排序后取序号，依次分配不重复的代号，
+    // 既保证同一会话每次显示同一个名字，又避免多个会话撞名。
+    const id = session.session_id ?? "";
+    const ordered = [...sessions]
+      .map((item) => item.session_id ?? "")
+      .sort();
+    const index = ordered.indexOf(id);
+    const slot = index >= 0 ? index : 0;
+    return DEMO_NAMES[slot % DEMO_NAMES.length];
+  }
+
+  function handleTitleClick() {
+    titleClickCount += 1;
+    if (titleClickTimer) clearTimeout(titleClickTimer);
+    titleClickTimer = setTimeout(() => {
+      titleClickCount = 0;
+    }, 1500);
+    if (titleClickCount >= 5) {
+      demoMode = !demoMode;
+      titleClickCount = 0;
+    }
   }
 
   function sessionSubtitle(session: AgentSession): string {
@@ -2001,7 +2040,7 @@
   function projectSummaryItems(): Array<{ name: string; total: number; active: number; risks: number; tokens: number }> {
     const byProject = new Map<string, { name: string; total: number; active: number; risks: number; tokens: number }>();
     for (const session of sessions) {
-      const name = session.project_name || "Unknown";
+      const name = sessionTitle(session);
       const item = byProject.get(name) ?? { name, total: 0, active: 0, risks: 0, tokens: 0 };
       item.total++;
       if (wasActive(session.status) || session.status === "rate_limited") item.active++;
@@ -2599,7 +2638,7 @@
                 {#each dashboardRisks as item}
                   <button class="risk-feed-item" onclick={() => selectSession(item.session)}>
                     <span style="color:{riskColor(item.risk.severity)}">{riskLabel(item.risk.severity)}</span>
-                    <strong>{item.session.project_name} · {item.risk.title}</strong>
+                    <strong>{sessionTitle(item.session)} · {item.risk.title}</strong>
                     <p>{item.risk.evidence || item.risk.message}</p>
                     {#if item.risk.action}
                       <em>{item.risk.action}</em>
@@ -2664,7 +2703,7 @@
 <div class="panel">
   <header class="panel-pop-item" style="--pop-delay:36ms">
     <div class="header-text">
-      <h1>
+      <h1 onclick={handleTitleClick} role="presentation">
         <img class="panel-title-icon" src={looppulseIconUrl} alt="" />
         LoopPulse
       </h1>
@@ -2973,7 +3012,7 @@
               </span>
                 <div class="compact-title">
                   <div class="compact-title-line">
-                    <strong>{session.project_name || session.agent_type}</strong>
+                    <strong>{sessionTitle(session)}</strong>
                     <span class={`agent-app-badge ${agentToneClass(session)}`} title={agentDisplayLabel(session)}>{agentDisplayLabel(session)}</span>
                   </div>
                 <span>{modelBadgeLabel(session)}</span>
